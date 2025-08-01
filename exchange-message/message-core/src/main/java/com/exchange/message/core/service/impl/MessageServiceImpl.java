@@ -4,6 +4,7 @@ import com.exchange.message.api.dto.MessageSendRequest;
 import com.exchange.message.api.dto.MessageSendResponse;
 import com.exchange.message.api.enums.MessageType;
 import com.exchange.message.core.service.MessageService;
+import com.exchange.message.core.service.factory.MessageSenderFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,34 +23,14 @@ public class MessageServiceImpl implements MessageService {
     private static final Logger log = LoggerFactory.getLogger(MessageServiceImpl.class);
     
     @Autowired
-    private SmsServiceImpl smsService;
-    
-    @Autowired
-    private EmailServiceImpl emailService;
-    
-    @Autowired
-    private TelegramServiceImpl telegramService;
-    
-    @Autowired
-    private LarkServiceImpl larkService;
+    private MessageSenderFactory messageSenderFactory;
     
     @Override
     public MessageSendResponse sendMessage(MessageSendRequest request) {
         try {
             log.info("发送消息: {}", request);
             
-            switch (request.getMessageType()) {
-                case SMS:
-                    return smsService.sendSms(request);
-                case EMAIL:
-                    return emailService.sendEmail(request);
-                case TELEGRAM:
-                    return telegramService.sendTelegramMessage(request);
-                case LARK:
-                    return larkService.sendLarkMessage(request);
-                default:
-                    return MessageSendResponse.failure("UNSUPPORTED_MESSAGE_TYPE", "不支持的消息类型: " + request.getMessageType());
-            }
+            return messageSenderFactory.sendMessage(request);
         } catch (Exception e) {
             log.error("发送消息失败", e);
             return MessageSendResponse.failure("MESSAGE_SEND_ERROR", "发送消息失败: " + e.getMessage());
