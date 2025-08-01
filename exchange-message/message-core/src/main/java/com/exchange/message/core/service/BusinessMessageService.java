@@ -1,6 +1,5 @@
 package com.exchange.message.core.service;
 
-import com.exchange.message.api.dto.MessageSendRequest;
 import com.exchange.message.api.dto.MessageSendResponse;
 import com.exchange.message.api.enums.BusinessType;
 

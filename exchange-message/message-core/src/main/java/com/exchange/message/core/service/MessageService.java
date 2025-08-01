@@ -28,4 +28,11 @@ public interface MessageService {
      * @param request 消息发送请求
      */
     void sendMessageAsync(MessageSendRequest request);
+    
+    /**
+     * 异步发送消息并返回结果
+     * @param request 消息发送请求
+     * @return 发送结果
+     */
+    java.util.concurrent.CompletableFuture<MessageSendResponse> sendMessageAsyncWithResult(MessageSendRequest request);
 } 

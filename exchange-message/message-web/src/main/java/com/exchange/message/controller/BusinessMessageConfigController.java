@@ -1,4 +1,4 @@
-package com.exchange.message.web.controller;
+package com.exchange.message.controller;
 
 import com.exchange.message.api.dto.BusinessMessageConfig;
 import com.exchange.message.api.enums.BusinessType;
