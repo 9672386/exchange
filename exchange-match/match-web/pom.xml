@@ -12,7 +12,7 @@
         <relativePath>../pom.xml</relativePath>
     </parent>
 
-    <artifactId>exchange-match-web</artifactId>
+    <artifactId>match-web</artifactId>
     <packaging>jar</packaging>
     <name>Exchange Match Web</name>
     <description>Match service web layer</description>
@@ -21,14 +21,14 @@
         <!-- Match API Module -->
         <dependency>
             <groupId>com.exchange</groupId>
-            <artifactId>exchange-match-api</artifactId>
+            <artifactId>match-api</artifactId>
             <version>${project.version}</version>
         </dependency>
         
         <!-- Match Core Module -->
         <dependency>
             <groupId>com.exchange</groupId>
-            <artifactId>exchange-match-core</artifactId>
+            <artifactId>match-core</artifactId>
             <version>${project.version}</version>
         </dependency>
         
