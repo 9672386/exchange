@@ -2,6 +2,7 @@ package com.exchange.message.api.dto;
 
 import com.exchange.message.api.enums.MessageType;
 import com.exchange.message.api.enums.PlatformType;
+import com.exchange.message.api.enums.BusinessType;
 import io.swagger.v3.oas.annotations.media.Schema;
 import lombok.Data;
 
@@ -23,6 +24,10 @@ public class MessageSendRequest {
     @Schema(description = "平台类型", required = true)
     @NotNull(message = "平台类型不能为空")
     private PlatformType platformType;
+    
+    @Schema(description = "业务类型", required = true)
+    @NotNull(message = "业务类型不能为空")
+    private BusinessType businessType;
     
     @Schema(description = "模板ID")
     private String templateId;
