@@ -2,8 +2,11 @@ package com.exchange.message.core.service.manager;
 
 import com.exchange.message.api.dto.MessageSendRequest;
 import com.exchange.message.api.dto.MessageSendResponse;
+import com.exchange.message.api.dto.PlatformSelectionRequest;
+import com.exchange.message.api.dto.PlatformSelectionResult;
 import com.exchange.message.api.enums.MessageType;
 import com.exchange.message.api.enums.PlatformType;
+import com.exchange.message.core.service.PlatformConfigService;
 import com.exchange.message.core.service.factory.MessageSenderFactory;
 import com.exchange.message.core.service.sender.MessageSender;
 import org.slf4j.Logger;
@@ -27,6 +30,9 @@ public class MessageSenderManager {
     
     @Autowired
     private MessageSenderFactory messageSenderFactory;
+    
+    @Autowired
+    private PlatformConfigService platformConfigService;
     
     // 平台计数器，用于负载均衡
     private final Map<String, AtomicInteger> platformCounters = new ConcurrentHashMap<>();
@@ -71,17 +77,25 @@ public class MessageSenderManager {
         try {
             log.info("发送消息（带负载均衡）: {}", request);
             
-            // 获取所有支持的平台
-            List<MessageSender> senders = getAvailableSenders(request.getMessageType());
-            if (senders.isEmpty()) {
-                return MessageSendResponse.failure("NO_AVAILABLE_SENDER", "没有可用的发送器");
+            // 使用平台配置服务选择最佳平台
+            PlatformSelectionRequest selectionRequest = new PlatformSelectionRequest();
+            selectionRequest.setMessageType(request.getMessageType());
+            selectionRequest.setReceiver(request.getReceiver());
+            // TODO: 从接收者中提取地区代码和区号
+            // selectionRequest.setRegionCode(extractRegionCode(request.getReceiver()));
+            // selectionRequest.setAreaCode(extractAreaCode(request.getReceiver()));
+            
+            PlatformSelectionResult selectionResult = platformConfigService.selectBestPlatform(selectionRequest);
+            if (!selectionResult.getSuccess()) {
+                return MessageSendResponse.failure("PLATFORM_SELECTION_ERROR", selectionResult.getErrorMessage());
             }
             
-            // 选择负载最低的平台
-            MessageSender selectedSender = selectLowestLoadSender(senders);
-            log.info("选择发送器: {}", selectedSender.getClass().getSimpleName());
+            // 使用选中的平台发送消息
+            request.setPlatformType(selectionResult.getSelectedPlatform());
+            MessageSender sender = messageSenderFactory.getSender(request.getMessageType(), selectionResult.getSelectedPlatform());
             
-            return selectedSender.send(request);
+            log.info("选择发送器: {} (原因: {})", sender.getClass().getSimpleName(), selectionResult.getSelectionReason());
+            return sender.send(request);
             
         } catch (Exception e) {
             log.error("发送消息失败", e);
