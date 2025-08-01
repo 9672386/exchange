@@ -41,5 +41,8 @@
         
         <!-- Admin Module -->
         <module>exchange-admin</module>
+        
+        <!-- Message Module -->
+        <module>exchange-message</module>
     </modules>
 </project> 
