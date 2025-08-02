@@ -1,5 +1,6 @@
 package com.exchange.match.core.service;
 
+import com.exchange.match.core.event.handler.SnapshotEventHandler;
 import com.exchange.match.core.model.MatchEngineSnapshot;
 import com.exchange.match.request.EventSnapshotReq;
 import lombok.extern.slf4j.Slf4j;
