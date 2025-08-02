@@ -7,6 +7,7 @@ import com.exchange.message.api.enums.MessageType;
 import com.exchange.message.api.enums.PlatformType;
 import com.exchange.message.core.service.BusinessMessageService;
 import com.exchange.message.core.service.MessageService;
+import com.exchange.message.core.service.MultiLanguageTemplateService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,13 +27,22 @@ public class BusinessMessageServiceImpl implements BusinessMessageService {
     @Autowired
     private MessageService messageService;
     
+    @Autowired
+    private MultiLanguageTemplateService multiLanguageTemplateService;
+    
     @Override
     public MessageSendResponse sendBusinessMessage(BusinessType businessType, String receiver, Map<String, Object> params) {
         try {
             log.info("发送业务消息: businessType={}, receiver={}", businessType, receiver);
             
+            // 从参数中获取语言代码，默认为中文
+            String languageCode = "zh_CN";
+            if (params != null && params.containsKey("languageCode")) {
+                languageCode = params.get("languageCode").toString();
+            }
+            
             // 根据业务类型构建消息请求
-            MessageSendRequest request = buildMessageRequest(businessType, receiver, params);
+            MessageSendRequest request = buildMessageRequest(businessType, receiver, params, languageCode);
             
             return messageService.sendMessage(request);
         } catch (Exception e) {
@@ -250,11 +260,12 @@ public class BusinessMessageServiceImpl implements BusinessMessageService {
         }
     }
     
-    private MessageSendRequest buildMessageRequest(BusinessType businessType, String receiver, Map<String, Object> params) {
+    private MessageSendRequest buildMessageRequest(BusinessType businessType, String receiver, Map<String, Object> params, String languageCode) {
         MessageSendRequest request = new MessageSendRequest();
         request.setBusinessType(businessType);
         request.setReceiver(receiver);
         request.setTemplateParams(params);
+        request.setLanguageCode(languageCode);
         request.setBusinessId(businessType.name().toLowerCase() + "_" + System.currentTimeMillis());
         
         // 根据业务类型设置默认的消息类型和平台

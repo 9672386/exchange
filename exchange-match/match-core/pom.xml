@@ -31,23 +31,23 @@
             <artifactId>exchange-common</artifactId>
             <version>${project.version}</version>
         </dependency>
-        
-        <!-- Spring Boot Starter Data JPA -->
+        <!-- Disruptor for high-performance event processing -->
         <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-data-jpa</artifactId>
+            <groupId>com.lmax</groupId>
+            <artifactId>disruptor</artifactId>
+            <version>3.4.4</version>
         </dependency>
         
-        <!-- MySQL Connector -->
+        <!-- Jackson JSR310 for Java 8 date/time support -->
         <dependency>
-            <groupId>mysql</groupId>
-            <artifactId>mysql-connector-java</artifactId>
+            <groupId>com.fasterxml.jackson.datatype</groupId>
+            <artifactId>jackson-datatype-jsr310</artifactId>
         </dependency>
         
-        <!-- Spring Cloud OpenFeign -->
+        <!-- Lombok -->
         <dependency>
-            <groupId>org.springframework.cloud</groupId>
-            <artifactId>spring-cloud-starter-openfeign</artifactId>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
         </dependency>
         
         <!-- Test Dependencies -->

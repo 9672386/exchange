@@ -7,6 +7,7 @@ import com.exchange.message.api.dto.PlatformSelectionResult;
 import com.exchange.message.api.enums.MessageType;
 import com.exchange.message.api.enums.PlatformType;
 import com.exchange.message.core.service.PlatformConfigService;
+import com.exchange.common.region.RegionPhoneService;
 import com.exchange.message.core.service.factory.MessageSenderFactory;
 import com.exchange.message.core.service.sender.MessageSender;
 import org.slf4j.Logger;
@@ -33,6 +34,8 @@ public class MessageSenderManager {
     
     @Autowired
     private PlatformConfigService platformConfigService;
+    
+    // 使用静态方法，无需注入
     
     // 平台计数器，用于负载均衡
     private final Map<String, AtomicInteger> platformCounters = new ConcurrentHashMap<>();
@@ -81,9 +84,14 @@ public class MessageSenderManager {
             PlatformSelectionRequest selectionRequest = new PlatformSelectionRequest();
             selectionRequest.setMessageType(request.getMessageType());
             selectionRequest.setReceiver(request.getReceiver());
-            // TODO: 从接收者中提取地区代码和区号
-            // selectionRequest.setRegionCode(extractRegionCode(request.getReceiver()));
-            // selectionRequest.setAreaCode(extractAreaCode(request.getReceiver()));
+            
+            // 从接收者中提取地区代码和区号
+            if (request.getMessageType() == MessageType.SMS) {
+                RegionPhoneService.extractAreaCode(request.getReceiver())
+                    .ifPresent(selectionRequest::setAreaCode);
+                RegionPhoneService.extractRegionCode(request.getReceiver())
+                    .ifPresent(selectionRequest::setRegionCode);
+            }
             
             PlatformSelectionResult selectionResult = platformConfigService.selectBestPlatform(selectionRequest);
             if (!selectionResult.getSuccess()) {

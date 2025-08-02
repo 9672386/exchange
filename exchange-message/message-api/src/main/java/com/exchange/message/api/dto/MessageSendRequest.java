@@ -53,4 +53,7 @@ public class MessageSendRequest {
     
     @Schema(description = "延迟发送时间(毫秒)")
     private Long delayTime;
+    
+    @Schema(description = "语言代码", defaultValue = "zh_CN")
+    private String languageCode = "zh_CN";
 } 
