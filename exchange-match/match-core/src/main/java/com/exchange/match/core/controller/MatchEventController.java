@@ -115,4 +115,18 @@ public class MatchEventController {
             return ApiResponse.error(500, "查询持仓失败: " + e.getMessage());
         }
     }
+    
+    /**
+     * 执行强平
+     */
+    @PostMapping("/liquidation")
+    public ApiResponse<String> executeLiquidation(@RequestBody EventLiquidationReq liquidationReq) {
+        try {
+            String result = matchEventService.executeLiquidation(liquidationReq);
+            return ApiResponse.success(result);
+        } catch (Exception e) {
+            log.error("执行强平失败", e);
+            return ApiResponse.error(500, "执行强平失败: " + e.getMessage());
+        }
+    }
 } 

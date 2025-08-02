@@ -120,4 +120,20 @@ public class MatchEventServiceImpl implements MatchEventService {
             throw new RuntimeException("查询持仓失败", e);
         }
     }
+    
+    @Override
+    public String executeLiquidation(EventLiquidationReq liquidationReq) {
+        try {
+            log.info("执行强平: liquidationId={}, userId={}, symbol={}, type={}", 
+                    liquidationReq.getLiquidationId(), liquidationReq.getUserId(), 
+                    liquidationReq.getSymbol(), liquidationReq.getLiquidationType());
+            
+            eventPublishService.publishLiquidationEvent(liquidationReq);
+            
+            return "强平执行成功: " + liquidationReq.getLiquidationId();
+        } catch (Exception e) {
+            log.error("执行强平失败", e);
+            throw new RuntimeException("执行强平失败", e);
+        }
+    }
 } 

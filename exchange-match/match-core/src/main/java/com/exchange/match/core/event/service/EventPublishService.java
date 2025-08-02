@@ -82,6 +82,15 @@ public class EventPublishService {
     }
     
     /**
+     * 发布强平事件
+     */
+    public void publishLiquidationEvent(EventLiquidationReq liquidationReq) {
+        publishEvent(EventType.LIQUIDATION, event -> {
+            event.setLiquidationReq(liquidationReq);
+        });
+    }
+    
+    /**
      * 通用事件发布方法
      */
     private void publishEvent(EventType eventType, EventConfigurer configurer) {

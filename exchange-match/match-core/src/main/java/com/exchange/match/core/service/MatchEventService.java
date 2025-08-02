@@ -41,4 +41,9 @@ public interface MatchEventService {
      * 查询持仓
      */
     String queryPosition(EventQueryPositionReq queryPositionReq);
+    
+    /**
+     * 执行强平
+     */
+    String executeLiquidation(EventLiquidationReq liquidationReq);
 } 
