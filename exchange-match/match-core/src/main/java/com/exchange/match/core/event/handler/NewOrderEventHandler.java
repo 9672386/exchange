@@ -7,6 +7,9 @@ import com.exchange.match.core.matcher.OrderMatcher;
 import com.exchange.match.core.matcher.OrderMatcherFactory;
 import com.exchange.match.core.model.*;
 import com.exchange.match.core.model.MatchResponse;
+import com.exchange.match.core.service.BatchKafkaService;
+import com.exchange.match.core.service.CommandIdGenerator;
+import com.exchange.match.core.model.StateChangeEvent;
 import com.exchange.match.enums.EventType;
 import com.exchange.match.request.EventNewOrderReq;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +34,9 @@ public class NewOrderEventHandler implements EventHandler {
     @Autowired
     private OrderMatcherFactory orderMatcherFactory;
     
+    @Autowired
+    private BatchKafkaService batchKafkaService;
+    
     @Override
     public void handle(MatchEvent event) {
         try {
@@ -43,6 +49,35 @@ public class NewOrderEventHandler implements EventHandler {
             
             // 执行撮合逻辑
             MatchResponse response = processOrder(order);
+            
+            // 推送撮合结果到Kafka
+            batchKafkaService.pushMatchResult(response);
+            
+            // 只有成功的事件才推送状态变动事件
+            if (response.getStatus() == MatchStatus.SUCCESS || 
+                response.getStatus() == MatchStatus.PARTIALLY_FILLED || 
+                response.getStatus() == MatchStatus.PENDING) {
+                
+                // 生成命令ID
+                long commandId = CommandIdGenerator.nextId();
+                
+                // 创建状态变动事件
+                StateChangeEvent stateChangeEvent = StateChangeEvent.createSuccess(
+                    commandId, 
+                    EventType.NEW_ORDER, 
+                    newOrderReq, 
+                    response
+                );
+                
+                // 推送状态变动事件到Kafka
+                batchKafkaService.pushStateChangeEvent(stateChangeEvent);
+                
+                log.info("推送状态变动事件: commandId={}, orderId={}, status={}", 
+                        commandId, newOrderReq.getOrderId(), response.getStatus());
+            } else {
+                log.info("订单被拒绝，不推送状态变动事件: orderId={}, status={}, reason={}", 
+                        newOrderReq.getOrderId(), response.getStatus(), response.getErrorMessage());
+            }
             
             // 设置处理结果
             event.setResult(response);

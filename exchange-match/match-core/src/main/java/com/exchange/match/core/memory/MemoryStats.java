@@ -2,6 +2,8 @@ package com.exchange.match.core.memory;
 
 import lombok.Data;
 
+import java.math.BigDecimal;
+
 /**
  * 内存统计信息
  */
@@ -26,7 +28,17 @@ public class MemoryStats {
     /**
      * 总订单数量
      */
-    private int totalOrderCount;
+    private long totalOrderCount;
+    
+    /**
+     * 总成交数量
+     */
+    private long totalTradeCount;
+    
+    /**
+     * 24小时总成交量
+     */
+    private BigDecimal totalVolume24h;
     
     /**
      * 统计时间戳
@@ -35,5 +47,6 @@ public class MemoryStats {
     
     public MemoryStats() {
         this.timestamp = System.currentTimeMillis();
+        this.totalVolume24h = BigDecimal.ZERO;
     }
 } 

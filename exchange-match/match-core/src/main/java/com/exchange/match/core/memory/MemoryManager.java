@@ -64,6 +64,14 @@ public class MemoryManager {
     }
     
     /**
+     * 设置订单薄（用于恢复时）
+     */
+    public void setOrderBook(String symbol, OrderBook orderBook) {
+        orderBooks.put(symbol, orderBook);
+        log.info("设置订单薄: symbol={}", symbol);
+    }
+    
+    /**
      * 获取或创建仓位
      */
     public Position getOrCreatePosition(Long userId, String symbol) {

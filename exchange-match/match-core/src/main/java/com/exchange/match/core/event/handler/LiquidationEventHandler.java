@@ -5,6 +5,9 @@ import com.exchange.match.core.event.MatchEvent;
 import com.exchange.match.core.memory.MemoryManager;
 import com.exchange.match.core.model.*;
 import com.exchange.match.core.model.MatchResponse;
+import com.exchange.match.core.service.BatchKafkaService;
+import com.exchange.match.core.service.CommandIdGenerator;
+import com.exchange.match.core.model.StateChangeEvent;
 import com.exchange.match.core.service.RiskManagementService;
 import com.exchange.match.core.service.RiskRecalculationService;
 import com.exchange.match.enums.EventType;
@@ -35,6 +38,9 @@ public class LiquidationEventHandler implements EventHandler {
     @Autowired
     private RiskRecalculationService riskRecalculationService;
     
+    @Autowired
+    private BatchKafkaService batchKafkaService;
+    
     @Override
     public void handle(MatchEvent event) {
         try {
@@ -48,6 +54,33 @@ public class LiquidationEventHandler implements EventHandler {
             
             // 执行强平逻辑
             LiquidationRequest.LiquidationResult result = processLiquidation(liquidationRequest);
+            
+            // 推送强平结果到Kafka
+            batchKafkaService.pushMatchResult(result);
+            
+            // 只有成功强平才推送状态变动事件
+            if (liquidationRequest.getStatus() == LiquidationRequest.LiquidationStatus.COMPLETED) {
+                
+                // 生成命令ID
+                long commandId = CommandIdGenerator.nextId();
+                
+                // 创建状态变动事件
+                StateChangeEvent stateChangeEvent = StateChangeEvent.createSuccess(
+                    commandId, 
+                    EventType.LIQUIDATION, 
+                    liquidationReq, 
+                    result
+                );
+                
+                // 推送状态变动事件到Kafka
+                batchKafkaService.pushStateChangeEvent(stateChangeEvent);
+                
+                log.info("推送强平状态变动事件: commandId={}, liquidationId={}, status={}", 
+                        commandId, liquidationReq.getLiquidationId(), liquidationRequest.getStatus());
+            } else {
+                log.info("强平失败，不推送状态变动事件: liquidationId={}, status={}, reason={}", 
+                        liquidationReq.getLiquidationId(), liquidationRequest.getStatus(), result.getErrorMessage());
+            }
             
             // 设置处理结果
             event.setResult(result);
