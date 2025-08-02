@@ -13,6 +13,7 @@ public enum EventType {
     CLEAR_SYMBOL("清理指定symbol",true),
     QUERY_ORDER("查询订单",false),
     QUERY_POSITION("停止",false),
+    LIQUIDATION("强平",true),
     ;
 
     private String type;

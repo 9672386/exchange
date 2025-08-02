@@ -32,6 +32,7 @@ public class MatchEvent implements Serializable {
     private EventStopReq stopReq;
     private EventQueryOrderReq queryOrderReq;
     private EventQueryPositionReq queryPositionReq;
+    private EventLiquidationReq liquidationReq;
     
     /**
      * 事件处理结果
@@ -61,6 +62,7 @@ public class MatchEvent implements Serializable {
         this.stopReq = null;
         this.queryOrderReq = null;
         this.queryPositionReq = null;
+        this.liquidationReq = null;
         this.result = null;
         this.exception = null;
         this.timestamp = 0;
