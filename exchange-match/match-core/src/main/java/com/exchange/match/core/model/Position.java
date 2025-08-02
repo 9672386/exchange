@@ -311,21 +311,7 @@ public class Position {
     public boolean canClose(BigDecimal closeQuantity) {
         return this.availableQuantity.compareTo(closeQuantity) >= 0;
     }
-    
-    /**
-     * 获取可用数量
-     */
-    public BigDecimal getAvailableQuantity() {
-        return this.availableQuantity;
-    }
-    
-    /**
-     * 获取锁定数量
-     */
-    public BigDecimal getLockedQuantity() {
-        return this.lockedQuantity;
-    }
-    
+
     /**
      * 更新可用数量（开仓时调用）
      */
