@@ -1,6 +1,7 @@
 package com.exchange.account.core.cluster.client;
 
 import com.exchange.account.core.gateway.AssetGatewayService;
+import com.exchange.match.constant.MatchSettlementStream;
 import com.exchange.match.model.MatchResponse;
 import com.exchange.match.model.Trade;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -278,9 +279,14 @@ public class TradeSettlementForwarder {
     // Archive helpers
     // =========================================================================
 
-    /** 查找 Match 引擎录制的成交结果 recording（按 MDC stream ID 匹配）。 */
+    /**
+     * 查找撮合引擎录制的<b>结算流</b> recording（专用 IPC stream,与实时 UDP 广播隔离）。
+     *
+     * <p>stream ID 来自 {@link MatchSettlementStream#SETTLEMENT_STREAM}（match-api 契约常量）。
+     * 结算流由 {@code AeronMatchResultPublisher} 可靠写入,不会因实时消费方背压而丢消息。
+     */
     private long findMatchRecording(AeronArchive archive) {
-        int targetStream = resolveMdcStreamId();
+        int targetStream = MatchSettlementStream.SETTLEMENT_STREAM;
         long[] result = {-1L};
         archive.listRecordings(0, 1_000,
                 (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
@@ -291,15 +297,6 @@ public class TradeSettlementForwarder {
                     }
                 });
         return result[0];
-    }
-
-    private int resolveMdcStreamId() {
-        try {
-            String v = System.getenv("STREAM_ID");
-            return (v != null && !v.isBlank()) ? Integer.parseInt(v.trim()) : 1001;
-        } catch (Exception e) {
-            return 1001;
-        }
     }
 
     private Image awaitImage(Subscription sub, int sessionId, long timeoutMs) throws TimeoutException {

@@ -5,7 +5,7 @@ import com.exchange.account.api.dto.AssetStateChangeEvent;
 /**
  * 资产事件发布接口（解耦 ClusteredService 与具体 MQ 实现）。
  *
- * <p>生产实现：{@link KafkaAssetEventPublisher}（发布到 Kafka）。
+ * <p>生产实现：{@link AeronArchiveEventPublisher}（录制到 Aeron Archive）。
  * 测试/嵌入实现：可替换为内存队列或 No-op。
  *
  * <h3>调用方</h3>

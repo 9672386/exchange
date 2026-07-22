@@ -1,5 +1,6 @@
 package com.exchange.match.core.transport;
 
+import com.exchange.match.constant.MatchSettlementStream;
 import com.exchange.match.model.MatchResponse;
 import com.exchange.transport.aeron.config.AeronConfigFactory;
 import com.exchange.transport.aeron.config.AeronConfigFactory.PublisherChannelConfig;
@@ -71,16 +72,21 @@ public class AeronMatchResultPublisher implements InitializingBean, DisposableBe
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private Publication publication;
+    /** 实时广播 publication（UDP MDC）→ Risk / Quote 等动态订阅方,尽力而为。 */
+    private Publication livePublication;
+
+    /**
+     * 结算录制 publication（进程内 IPC,stream={@link MatchSettlementStream#SETTLEMENT_STREAM}）
+     * → Archive 本地录制 → TradeSettlementForwarder 消费。<b>可靠写入,绝不丢。</b>
+     * Archive 未启用时为 null（降级:仅 UDP 广播,无持久化）。
+     */
+    private Publication settlementPublication;
 
     /** channel/streamId 配置，保存供快照记录查询用。 */
     private PublisherChannelConfig cfg;
 
-    /** 最近一次成功 offer 的 publication position，快照时写入 archivePosition 字段。 */
+    /** 最近一次成功 offer 的结算 publication position，快照时写入 archivePosition 字段。 */
     private volatile long lastPublishedPosition = 0L;
-
-    /** 成交结果录制专用 stream（与 Cluster 内部 stream 不冲突）。供 TradeSettlementForwarder 订阅。*/
-    public static final int SETTLEMENT_RECORDING_STREAM = 2000;
 
     /**
      * BACK_PRESSURED 时最大自旋重试次数（约 2 ms 窗口）。
@@ -101,27 +107,30 @@ public class AeronMatchResultPublisher implements InitializingBean, DisposableBe
     @Override
     public void afterPropertiesSet() {
         cfg = AeronConfigFactory.buildPublisherFromEnv();
-        publication = aeron.addPublication(cfg.getChannel(), cfg.getStreamId());
-        log.info("[AeronMatchResultPublisher] Publication ready — channel={}, streamId={}",
+        // 1) 实时广播流（UDP MDC）——给 Risk/Quest 等动态订阅方
+        livePublication = aeron.addPublication(cfg.getChannel(), cfg.getStreamId());
+        log.info("[AeronMatchResultPublisher] Live MDC publication ready — channel={}, streamId={}",
                 cfg.getChannel(), cfg.getStreamId());
 
-        // Archive 录制：持久化成交结果供 TradeSettlementForwarder 消费（替代 Kafka）
+        // 2) 结算录制流（IPC）——Archive 本地可靠录制,供 TradeSettlementForwarder 消费
         if (aeronArchive != null) {
-            // 录制 MDC 出站流（LOCAL = 发布者与 Archive 在同一进程）
-            aeronArchive.startRecording(cfg.getChannel(), cfg.getStreamId(), SourceLocation.LOCAL);
-            log.info("[AeronMatchResultPublisher] Archive recording started — stream={} (settlement)",
-                    cfg.getStreamId());
+            settlementPublication = aeron.addExclusivePublication(
+                    MatchSettlementStream.SETTLEMENT_CHANNEL, MatchSettlementStream.SETTLEMENT_STREAM);
+            aeronArchive.startRecording(
+                    MatchSettlementStream.SETTLEMENT_CHANNEL, MatchSettlementStream.SETTLEMENT_STREAM,
+                    SourceLocation.LOCAL);
+            log.info("[AeronMatchResultPublisher] Settlement recording started — channel={} stream={} (durable)",
+                    MatchSettlementStream.SETTLEMENT_CHANNEL, MatchSettlementStream.SETTLEMENT_STREAM);
         } else {
-            log.warn("[AeronMatchResultPublisher] AeronArchive not available — " +
-                    "match results will NOT be durably recorded; TradeSettlementForwarder uses MDC only");
+            log.warn("[AeronMatchResultPublisher] AeronArchive not available — settlement NOT durably recorded; "
+                    + "结算将无持久化保证,仅实时 UDP 广播（降级模式,勿用于生产）");
         }
     }
 
     @Override
     public void destroy() {
-        if (publication != null) {
-            publication.close();
-        }
+        if (livePublication != null)       livePublication.close();
+        if (settlementPublication != null) settlementPublication.close();
         log.info("[AeronMatchResultPublisher] Shutdown — sent={}, backPressure={}, error={}",
                 sentCount.sum(), backPressureCount.sum(), errorCount.sum());
     }
@@ -160,30 +169,12 @@ public class AeronMatchResultPublisher implements InitializingBean, DisposableBe
             // UnsafeBuffer 直接包装字节数组，零拷贝传入 Aeron（不额外分配堆内存）
             UnsafeBuffer buffer = new UnsafeBuffer(jsonBytes);
 
-            long result = publication.offer(buffer, 0, jsonBytes.length);
+            // ① 结算流：可靠写入 IPC（Archive 录制）。绝不丢——漏一条就漏一笔结算。
+            //    IPC 本地极快,背压罕见;真背压时自旋直到成功(宁可短暂阻塞撮合,也不丢钱)。
+            publishSettlementReliable(buffer, jsonBytes.length, response.getOrderId());
 
-            // 背压时自旋重试，保证 Archive 能录制到本条消息
-            if (result == Publication.BACK_PRESSURED) {
-                int retries = 0;
-                while (result == Publication.BACK_PRESSURED && retries < MAX_BACK_PRESSURE_RETRIES) {
-                    Thread.yield();
-                    result = publication.offer(buffer, 0, jsonBytes.length);
-                    retries++;
-                }
-                if (retries > 0) {
-                    backPressureCount.add(retries);
-                }
-                if (result == Publication.BACK_PRESSURED) {
-                    // 超过重试上限：Archive 可能漏录，须告警
-                    errorCount.increment();
-                    log.error("[AeronMatchResultPublisher] BACK_PRESSURED exceeded {} retries — " +
-                              "message DROPPED, Archive may miss this trade! orderId={}",
-                              MAX_BACK_PRESSURE_RETRIES, response.getOrderId());
-                    return;
-                }
-            }
-
-            handleOfferResult(result, response.getOrderId());
+            // ② 实时流：尽力而为广播给 Risk/Quote。慢消费者背压→丢弃,不影响结算,不阻塞撮合。
+            publishLiveBestEffort(buffer, jsonBytes.length, response.getOrderId());
 
         } catch (Exception e) {
             errorCount.increment();
@@ -193,14 +184,74 @@ public class AeronMatchResultPublisher implements InitializingBean, DisposableBe
     }
 
     /**
-     * 处理 Aeron offer 返回值，记录 metric，不阻塞撮合线程。
+     * 可靠写入结算流(IPC),自旋直到 Archive 录制成功。
+     *
+     * <p>结算依赖此流的完整性,因此除 {@code CLOSED}(关机)/{@code MAX_POSITION_EXCEEDED}(极端)
+     * 外<b>绝不放弃</b>。IPC→本地 Archive 极快,持续背压意味着磁盘/Archive 严重异常,
+     * 此时短暂阻塞撮合线程(可被延迟监控发现)远优于静默漏结算。
+     */
+    private void publishSettlementReliable(UnsafeBuffer buffer, int len, String orderId) {
+        if (settlementPublication == null) {
+            // 降级模式(Archive 未启用):无结算持久化——仅测试/无 Aeron 部署
+            errorCount.increment();
+            return;
+        }
+        long result;
+        long retries = 0;
+        while ((result = settlementPublication.offer(buffer, 0, len)) < 0) {
+            if (result == Publication.CLOSED) {
+                log.error("[AeronMatchResultPublisher] Settlement publication CLOSED — trade NOT recorded, orderId={}", orderId);
+                errorCount.increment();
+                return;   // 仅关机路径
+            }
+            if (result == Publication.MAX_POSITION_EXCEEDED) {
+                log.error("[AeronMatchResultPublisher] Settlement MAX_POSITION_EXCEEDED, orderId={}", orderId);
+                errorCount.increment();
+                return;   // 极端,需运维介入
+            }
+            // BACK_PRESSURED / ADMIN_ACTION / (IPC 下 NOT_CONNECTED 不应出现) → 自旋直到成功
+            if (++retries % 200_000 == 0) {
+                backPressureCount.increment();
+                log.warn("[AeronMatchResultPublisher] Settlement publish spinning {} retries — Archive slow? orderId={}",
+                        retries, orderId);
+            }
+            Thread.yield();
+        }
+        lastPublishedPosition = result;
+        sentCount.increment();
+    }
+
+    /**
+     * 尽力而为广播到实时流(UDP MDC),供 Risk/Quote 消费。慢消费者丢弃,不阻塞撮合。
+     */
+    private void publishLiveBestEffort(UnsafeBuffer buffer, int len, String orderId) {
+        long result = livePublication.offer(buffer, 0, len);
+        if (result == Publication.BACK_PRESSURED) {
+            int retries = 0;
+            while (result == Publication.BACK_PRESSURED && retries < MAX_BACK_PRESSURE_RETRIES) {
+                Thread.yield();
+                result = livePublication.offer(buffer, 0, len);
+                retries++;
+            }
+            if (result == Publication.BACK_PRESSURED) {
+                // 实时消费方严重滞后:丢弃(不影响结算,结算走 IPC 流)
+                log.debug("[AeronMatchResultPublisher] Live stream dropped for slow subscriber, orderId={}", orderId);
+                return;
+            }
+        }
+        handleOfferResult(result, orderId);
+    }
+
+    /**
+     * 处理实时流 offer 返回值（仅日志/metric,不影响结算）。
+     *
+     * <p>注意:{@code lastPublishedPosition} 和 {@code sentCount} 由结算流
+     * ({@code publishSettlementReliable})维护,此处不再触碰——快照的 archivePosition
+     * 必须来自结算流,而非实时流。
      */
     private void handleOfferResult(long result, String orderId) {
         if (result > 0) {
-            // 正值 = 新的 Publication position，发送成功；记录供快照使用
-            lastPublishedPosition = result;
-            sentCount.increment();
-            return;
+            return;   // 实时广播成功,无需记录位点
         }
 
         switch ((int) result) {
@@ -248,14 +299,15 @@ public class AeronMatchResultPublisher implements InitializingBean, DisposableBe
      * 未启用 Archive 时返回 {@code -1}。
      */
     public long findCurrentRecordingId() {
-        if (aeronArchive == null || cfg == null) return -1L;
+        if (aeronArchive == null) return -1L;
         long[] found = {-1L};
         try {
+            // 注意:录制的是结算流(SETTLEMENT_STREAM),不是实时 MDC 流
             aeronArchive.listRecordings(0, Integer.MAX_VALUE,
                     (controlSessionId, correlationId, recordingId, startTimestamp, stopTimestamp,
                      startPosition, stopPosition, initialTermId, segmentFileLength, termBufferLength,
                      mtuLength, sessionId, streamId, strippedChannel, originalChannel, sourceIdentity) -> {
-                        if (streamId == cfg.getStreamId()) {
+                        if (streamId == MatchSettlementStream.SETTLEMENT_STREAM) {
                             found[0] = recordingId;  // iterate all; last (largest) id = most recent
                         }
                     });
@@ -266,10 +318,11 @@ public class AeronMatchResultPublisher implements InitializingBean, DisposableBe
     }
 
     /**
-     * Publication 是否已连接到至少一个订阅方。
+     * 结算 publication 是否已连接（Archive 录制路径健康）。
      * 可用于健康检查探针。
      */
     public boolean isConnected() {
-        return publication != null && publication.isConnected();
+        Publication p = (settlementPublication != null) ? settlementPublication : livePublication;
+        return p != null && p.isConnected();
     }
 }

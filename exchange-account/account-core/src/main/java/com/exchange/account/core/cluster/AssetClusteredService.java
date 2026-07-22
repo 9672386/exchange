@@ -239,18 +239,22 @@ public class AssetClusteredService implements ClusteredService {
         String      orderId       = req.get("orderId").asText();
 
         checkBizNoExpiry(orderId, timestamp, "FREEZE");
+        long seqBefore = ledger.currentSeq();
         ledger.freeze(userId, accountType, asset, amt, orderId, timestamp);
 
-        Balance snap = ledger.getBalance(userId, accountType, asset);
-        publishIfLeader(AssetStateChangeEvent.builder()
-                .eventId("FREEZE:" + orderId + ":" + userId + ":" + accountType + ":" + asset)
-                .eventType("FREEZE")
-                .userId(userId).accountType(accountType).asset(asset)
-                .available(snap.getAvailable()).frozen(snap.getFrozen())
-                .amount(amt.negate())
-                .flowType(FundFlowType.FREEZE)
-                .bizNo(orderId).remark("freeze for order")
-                .clusterTimestamp(timestamp).build());
+        if (ledger.currentSeq() > seqBefore) {   // 实际执行(非幂等跳过)才发事件,保证 seq 无洞
+            Balance snap = ledger.getBalance(userId, accountType, asset);
+            publishIfLeader(AssetStateChangeEvent.builder()
+                    .eventId("FREEZE:" + orderId + ":" + userId + ":" + accountType + ":" + asset)
+                    .eventType("FREEZE")
+                    .userId(userId).accountType(accountType).asset(asset)
+                    .available(snap.getAvailable()).frozen(snap.getFrozen())
+                    .amount(amt.negate())
+                    .flowType(FundFlowType.FREEZE)
+                    .bizNo(orderId).remark("freeze for order")
+                    .seq(ledger.currentSeq())
+                    .clusterTimestamp(timestamp).build());
+        }
 
         sendEgress(session, AssetMsgType.FREEZE_OK,
                 "{\"correlationId\":\"" + correlationId + "\",\"orderId\":\"" + orderId + "\",\"status\":\"OK\"}");
@@ -269,18 +273,22 @@ public class AssetClusteredService implements ClusteredService {
         String      orderId       = req.get("orderId").asText();
 
         // 撤单解冻不做超时校验：orderId 可能是老单，时间超 30min 也需解冻
+        long seqBefore = ledger.currentSeq();
         ledger.unfreeze(userId, accountType, asset, amt, orderId, timestamp);
 
-        Balance snap = ledger.getBalance(userId, accountType, asset);
-        publishIfLeader(AssetStateChangeEvent.builder()
-                .eventId("UNFREEZE:" + orderId + ":" + userId + ":" + accountType + ":" + asset)
-                .eventType("UNFREEZE")
-                .userId(userId).accountType(accountType).asset(asset)
-                .available(snap.getAvailable()).frozen(snap.getFrozen())
-                .amount(amt)
-                .flowType(FundFlowType.UNFREEZE)
-                .bizNo(orderId).remark("unfreeze for order")
-                .clusterTimestamp(timestamp).build());
+        if (ledger.currentSeq() > seqBefore) {
+            Balance snap = ledger.getBalance(userId, accountType, asset);
+            publishIfLeader(AssetStateChangeEvent.builder()
+                    .eventId("UNFREEZE:" + orderId + ":" + userId + ":" + accountType + ":" + asset)
+                    .eventType("UNFREEZE")
+                    .userId(userId).accountType(accountType).asset(asset)
+                    .available(snap.getAvailable()).frozen(snap.getFrozen())
+                    .amount(amt)
+                    .flowType(FundFlowType.UNFREEZE)
+                    .bizNo(orderId).remark("unfreeze for order")
+                    .seq(ledger.currentSeq())
+                    .clusterTimestamp(timestamp).build());
+        }
 
         sendEgress(session, AssetMsgType.UNFREEZE_OK,
                 "{\"correlationId\":\"" + correlationId + "\",\"orderId\":\"" + orderId + "\",\"status\":\"OK\"}");
@@ -303,12 +311,15 @@ public class AssetClusteredService implements ClusteredService {
         BigDecimal  sellFee       = new BigDecimal(req.get("sellFee").asText());
         String      tradeId       = req.get("tradeId").asText();
 
+        long seqBefore = ledger.currentSeq();
         ledger.settleTrade(buyerId, sellerId, accountType, baseAsset, quoteAsset,
                 qty, quoteAmt, buyFee, sellFee, tradeId, timestamp);
 
-        if (cluster.role() == Cluster.Role.LEADER && eventPublisher != null) {
+        // seq 在所有副本上通过 settleTrade 已推进(4 条流水),此处仅 Leader 用 base 派发事件
+        if (ledger.currentSeq() > seqBefore
+                && cluster.role() == Cluster.Role.LEADER && eventPublisher != null) {
             publishSettleEvents(buyerId, sellerId, accountType, baseAsset, quoteAsset,
-                    qty, quoteAmt, buyFee, sellFee, tradeId, timestamp);
+                    qty, quoteAmt, buyFee, sellFee, tradeId, timestamp, seqBefore);
         }
 
         sendEgress(session, AssetMsgType.SETTLE_OK,
@@ -376,9 +387,13 @@ public class AssetClusteredService implements ClusteredService {
             checkBizNoExpiry(items.get(0).orderId(), timestamp, "BATCH_FREEZE");
         }
 
+        long seqBase = ledger.currentSeq();
         List<FreezeItem> processed = ledger.batchFreeze(userId, items, timestamp);
 
+        // processed[i] 的流水 seq = seqBase + 1 + i(batchFreeze 按列表顺序逐个 advanceSeq(1))
+        long idx = 0;
         for (FreezeItem item : processed) {
+            long itemSeq = seqBase + (++idx);
             Balance snap = ledger.getBalance(userId, item.accountType(), item.asset());
             publishIfLeader(AssetStateChangeEvent.builder()
                     .eventId("FREEZE:" + item.orderId() + ":" + userId + ":" + item.accountType() + ":" + item.asset())
@@ -388,6 +403,7 @@ public class AssetClusteredService implements ClusteredService {
                     .amount(item.amount().negate())
                     .flowType(FundFlowType.FREEZE)
                     .bizNo(item.orderId()).remark("batch freeze for order")
+                    .seq(itemSeq)
                     .clusterTimestamp(timestamp).build());
         }
 
@@ -423,27 +439,32 @@ public class AssetClusteredService implements ClusteredService {
             trades.add(t);
         }
 
-        ledger.batchSettle(trades, timestamp);
+        // 逐笔结算并发布:每笔捕获自己的 seqBase(结算产出 4 条流水),保证事件 seq 无洞。
+        // 等价于原 ledger.batchSettle(内部即逐笔 settleTrade),只是内联以获取每笔 seq。
+        boolean leader = (cluster.role() == Cluster.Role.LEADER && eventPublisher != null);
+        for (Map<String, Object> t : trades) {
+            String      tradeId     = (String) t.get("tradeId");
+            Long        buyerId     = ((Number) t.get("buyerId")).longValue();
+            Long        sellerId    = ((Number) t.get("sellerId")).longValue();
+            AccountType accountType = AccountType.valueOf((String) t.get("accountType"));
+            String      baseAsset   = (String) t.get("baseAsset");
+            String      quoteAsset  = (String) t.get("quoteAsset");
+            BigDecimal  qty         = new BigDecimal((String) t.get("qty"));
+            BigDecimal  quoteAmt    = new BigDecimal((String) t.get("quoteAmt"));
+            BigDecimal  buyFee      = new BigDecimal((String) t.getOrDefault("buyFee",  "0"));
+            BigDecimal  sellFee     = new BigDecimal((String) t.getOrDefault("sellFee", "0"));
+
+            long seqBefore = ledger.currentSeq();
+            ledger.settleTrade(buyerId, sellerId, accountType, baseAsset, quoteAsset,
+                    qty, quoteAmt, buyFee, sellFee, tradeId, timestamp);
+            if (ledger.currentSeq() > seqBefore && leader) {
+                publishSettleEvents(buyerId, sellerId, accountType, baseAsset, quoteAsset,
+                        qty, quoteAmt, buyFee, sellFee, tradeId, timestamp, seqBefore);
+            }
+        }
 
         if (archivePosition >= 0) {
             ledger.updateMatchArchivePosition(archivePosition);
-        }
-
-        if (cluster.role() == Cluster.Role.LEADER && eventPublisher != null) {
-            for (Map<String, Object> t : trades) {
-                String      tradeId     = (String) t.get("tradeId");
-                Long        buyerId     = ((Number) t.get("buyerId")).longValue();
-                Long        sellerId    = ((Number) t.get("sellerId")).longValue();
-                AccountType accountType = AccountType.valueOf((String) t.get("accountType"));
-                String      baseAsset   = (String) t.get("baseAsset");
-                String      quoteAsset  = (String) t.get("quoteAsset");
-                BigDecimal  qty         = new BigDecimal((String) t.get("qty"));
-                BigDecimal  quoteAmt    = new BigDecimal((String) t.get("quoteAmt"));
-                BigDecimal  buyFee      = new BigDecimal((String) t.getOrDefault("buyFee",  "0"));
-                BigDecimal  sellFee     = new BigDecimal((String) t.getOrDefault("sellFee", "0"));
-                publishSettleEvents(buyerId, sellerId, accountType, baseAsset, quoteAsset,
-                        qty, quoteAmt, buyFee, sellFee, tradeId, timestamp);
-            }
         }
 
         sendEgress(session, AssetMsgType.BATCH_SETTLE_RESP,
@@ -462,18 +483,22 @@ public class AssetClusteredService implements ClusteredService {
         String      bizNo         = req.get("bizNo").asText();
         String      remark        = req.path("remark").asText("credit");
 
+        long seqBefore = ledger.currentSeq();
         ledger.credit(userId, accountType, asset, amount, bizNo, timestamp);
 
-        Balance snap = ledger.getBalance(userId, accountType, asset);
-        publishIfLeader(AssetStateChangeEvent.builder()
-                .eventId("CREDIT:" + bizNo + ":" + userId + ":" + accountType + ":" + asset)
-                .eventType("CREDIT")
-                .userId(userId).accountType(accountType).asset(asset)
-                .available(snap.getAvailable()).frozen(snap.getFrozen())
-                .amount(amount)
-                .flowType(FundFlowType.CREDIT)
-                .bizNo(bizNo).remark(remark)
-                .clusterTimestamp(timestamp).build());
+        if (ledger.currentSeq() > seqBefore) {
+            Balance snap = ledger.getBalance(userId, accountType, asset);
+            publishIfLeader(AssetStateChangeEvent.builder()
+                    .eventId("CREDIT:" + bizNo + ":" + userId + ":" + accountType + ":" + asset)
+                    .eventType("CREDIT")
+                    .userId(userId).accountType(accountType).asset(asset)
+                    .available(snap.getAvailable()).frozen(snap.getFrozen())
+                    .amount(amount)
+                    .flowType(FundFlowType.CREDIT)
+                    .bizNo(bizNo).remark(remark)
+                    .seq(ledger.currentSeq())
+                    .clusterTimestamp(timestamp).build());
+        }
 
         sendEgress(session, AssetMsgType.CREDIT_OK,
                 "{\"correlationId\":\"" + correlationId + "\",\"bizNo\":\"" + bizNo + "\",\"status\":\"OK\"}");
@@ -492,18 +517,22 @@ public class AssetClusteredService implements ClusteredService {
         String      bizNo         = req.get("bizNo").asText();
         String      remark        = req.path("remark").asText("debit");
 
+        long seqBefore = ledger.currentSeq();
         ledger.debit(userId, accountType, asset, amount, bizNo, timestamp);
 
-        Balance snap = ledger.getBalance(userId, accountType, asset);
-        publishIfLeader(AssetStateChangeEvent.builder()
-                .eventId("DEBIT:" + bizNo + ":" + userId + ":" + accountType + ":" + asset)
-                .eventType("DEBIT")
-                .userId(userId).accountType(accountType).asset(asset)
-                .available(snap.getAvailable()).frozen(snap.getFrozen())
-                .amount(amount.negate())
-                .flowType(FundFlowType.DEBIT)
-                .bizNo(bizNo).remark(remark)
-                .clusterTimestamp(timestamp).build());
+        if (ledger.currentSeq() > seqBefore) {
+            Balance snap = ledger.getBalance(userId, accountType, asset);
+            publishIfLeader(AssetStateChangeEvent.builder()
+                    .eventId("DEBIT:" + bizNo + ":" + userId + ":" + accountType + ":" + asset)
+                    .eventType("DEBIT")
+                    .userId(userId).accountType(accountType).asset(asset)
+                    .available(snap.getAvailable()).frozen(snap.getFrozen())
+                    .amount(amount.negate())
+                    .flowType(FundFlowType.DEBIT)
+                    .bizNo(bizNo).remark(remark)
+                    .seq(ledger.currentSeq())
+                    .clusterTimestamp(timestamp).build());
+        }
 
         sendEgress(session, AssetMsgType.DEBIT_OK,
                 "{\"correlationId\":\"" + correlationId + "\",\"bizNo\":\"" + bizNo + "\",\"status\":\"OK\"}");
@@ -524,31 +553,36 @@ public class AssetClusteredService implements ClusteredService {
         String      remark        = req.path("remark").asText("internal transfer");
 
         checkBizNoExpiry(bizNo, timestamp, "INTERNAL_TRANSFER");
+        long seqBefore = ledger.currentSeq();
         ledger.internalTransfer(userId, fromType, toType, asset, amount, bizNo, timestamp);
 
-        // 发布出账事件（TRANSFER_OUT）
-        Balance fromSnap = ledger.getBalance(userId, fromType, asset);
-        publishIfLeader(AssetStateChangeEvent.builder()
-                .eventId("TRANSFER_OUT:" + bizNo + ":" + userId + ":" + fromType + ":" + asset)
-                .eventType("TRANSFER_OUT")
-                .userId(userId).accountType(fromType).asset(asset)
-                .available(fromSnap.getAvailable()).frozen(fromSnap.getFrozen())
-                .amount(amount.negate())
-                .flowType(FundFlowType.TRANSFER_OUT)
-                .bizNo(bizNo).remark(remark)
-                .clusterTimestamp(timestamp).build());
+        if (ledger.currentSeq() > seqBefore) {   // 2 条流水:OUT=seqBefore+1, IN=seqBefore+2
+            // 发布出账事件（TRANSFER_OUT）
+            Balance fromSnap = ledger.getBalance(userId, fromType, asset);
+            publishIfLeader(AssetStateChangeEvent.builder()
+                    .eventId("TRANSFER_OUT:" + bizNo + ":" + userId + ":" + fromType + ":" + asset)
+                    .eventType("TRANSFER_OUT")
+                    .userId(userId).accountType(fromType).asset(asset)
+                    .available(fromSnap.getAvailable()).frozen(fromSnap.getFrozen())
+                    .amount(amount.negate())
+                    .flowType(FundFlowType.TRANSFER_OUT)
+                    .bizNo(bizNo).remark(remark)
+                    .seq(seqBefore + 1)
+                    .clusterTimestamp(timestamp).build());
 
-        // 发布入账事件（TRANSFER_IN）
-        Balance toSnap = ledger.getBalance(userId, toType, asset);
-        publishIfLeader(AssetStateChangeEvent.builder()
-                .eventId("TRANSFER_IN:" + bizNo + ":" + userId + ":" + toType + ":" + asset)
-                .eventType("TRANSFER_IN")
-                .userId(userId).accountType(toType).asset(asset)
-                .available(toSnap.getAvailable()).frozen(toSnap.getFrozen())
-                .amount(amount)
-                .flowType(FundFlowType.TRANSFER_IN)
-                .bizNo(bizNo).remark(remark)
-                .clusterTimestamp(timestamp).build());
+            // 发布入账事件（TRANSFER_IN）
+            Balance toSnap = ledger.getBalance(userId, toType, asset);
+            publishIfLeader(AssetStateChangeEvent.builder()
+                    .eventId("TRANSFER_IN:" + bizNo + ":" + userId + ":" + toType + ":" + asset)
+                    .eventType("TRANSFER_IN")
+                    .userId(userId).accountType(toType).asset(asset)
+                    .available(toSnap.getAvailable()).frozen(toSnap.getFrozen())
+                    .amount(amount)
+                    .flowType(FundFlowType.TRANSFER_IN)
+                    .bizNo(bizNo).remark(remark)
+                    .seq(seqBefore + 2)
+                    .clusterTimestamp(timestamp).build());
+        }
 
         sendEgress(session, AssetMsgType.TRANSFER_OK,
                 "{\"correlationId\":\"" + correlationId + "\",\"bizNo\":\"" + bizNo + "\",\"status\":\"OK\"}");
@@ -840,7 +874,8 @@ public class AssetClusteredService implements ClusteredService {
                                      String baseAsset, String quoteAsset,
                                      BigDecimal qty, BigDecimal quoteAmt,
                                      BigDecimal buyFee, BigDecimal sellFee,
-                                     String tradeId, long timestamp) {
+                                     String tradeId, long timestamp, long seqBase) {
+        // 4 条流水的 seq 依次为 seqBase+1..seqBase+4(与账本 advanceSeq(4) 的顺序一致)
         Balance bq = ledger.getBalance(buyerId,  accountType, quoteAsset);
         Balance bb = ledger.getBalance(buyerId,  accountType, baseAsset);
         Balance sb = ledger.getBalance(sellerId, accountType, baseAsset);
@@ -851,28 +886,28 @@ public class AssetClusteredService implements ClusteredService {
                 .eventType("SETTLE_BUYER_DEDUCT").userId(buyerId).accountType(accountType).asset(quoteAsset)
                 .available(bq.getAvailable()).frozen(bq.getFrozen())
                 .amount(quoteAmt.add(buyFee).negate()).flowType(FundFlowType.TRADE_DEDUCT)
-                .bizNo(tradeId).remark("settle buy deduct").clusterTimestamp(timestamp).build());
+                .bizNo(tradeId).remark("settle buy deduct").seq(seqBase + 1).clusterTimestamp(timestamp).build());
 
         eventPublisher.publish(AssetStateChangeEvent.builder()
                 .eventId("SETTLE_BUY_CREDIT:" + tradeId + ":" + buyerId + ":" + accountType + ":" + baseAsset)
                 .eventType("SETTLE_BUYER_CREDIT").userId(buyerId).accountType(accountType).asset(baseAsset)
                 .available(bb.getAvailable()).frozen(bb.getFrozen())
                 .amount(qty).flowType(FundFlowType.TRADE_CREDIT)
-                .bizNo(tradeId).remark("settle buy credit").clusterTimestamp(timestamp).build());
+                .bizNo(tradeId).remark("settle buy credit").seq(seqBase + 2).clusterTimestamp(timestamp).build());
 
         eventPublisher.publish(AssetStateChangeEvent.builder()
                 .eventId("SETTLE_SELL_DEDUCT:" + tradeId + ":" + sellerId + ":" + accountType + ":" + baseAsset)
                 .eventType("SETTLE_SELLER_DEDUCT").userId(sellerId).accountType(accountType).asset(baseAsset)
                 .available(sb.getAvailable()).frozen(sb.getFrozen())
                 .amount(qty.negate()).flowType(FundFlowType.TRADE_DEDUCT)
-                .bizNo(tradeId).remark("settle sell deduct").clusterTimestamp(timestamp).build());
+                .bizNo(tradeId).remark("settle sell deduct").seq(seqBase + 3).clusterTimestamp(timestamp).build());
 
         eventPublisher.publish(AssetStateChangeEvent.builder()
                 .eventId("SETTLE_SELL_CREDIT:" + tradeId + ":" + sellerId + ":" + accountType + ":" + quoteAsset)
                 .eventType("SETTLE_SELLER_CREDIT").userId(sellerId).accountType(accountType).asset(quoteAsset)
                 .available(sq.getAvailable()).frozen(sq.getFrozen())
                 .amount(quoteAmt.subtract(sellFee)).flowType(FundFlowType.TRADE_CREDIT)
-                .bizNo(tradeId).remark("settle sell credit").clusterTimestamp(timestamp).build());
+                .bizNo(tradeId).remark("settle sell credit").seq(seqBase + 4).clusterTimestamp(timestamp).build());
     }
 
     private JsonNode parseJson(DirectBuffer buffer, int offset, int length) throws IOException {

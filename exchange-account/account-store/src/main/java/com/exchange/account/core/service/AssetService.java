@@ -7,9 +7,11 @@ import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * 资产账户服务接口。
+ * 资产账户投影服务接口（CQRS 读侧 + 事件落库）。
  *
- * <p>管理用户可用余额与冻结余额，所有操作需保证原子性并写入对应资金流水。
+ * <p>权威余额状态在 Cluster 内存账本（account-core），本接口只负责
+ * {@code t_user_asset} 投影的<b>查询</b>与 {@link #upsertBalance 事件落库}。
+ * 资金变动（冻结/结算/加减/划转）全部走内存状态机,本接口不做任何账本 mutation。
  */
 public interface AssetService {
 
@@ -45,48 +47,6 @@ public interface AssetService {
      * 查询用户所有账户类型下所有资产余额（汇总视图）。
      */
     List<AssetDTO> getAllBalancesByType(Long userId);
-
-    /**
-     * 冻结资产（下单时调用）。
-     *
-     * <p>将 {@code amount} 从可用余额转移到冻结余额，同时写 {@link com.exchange.account.api.enums.FundFlowType#FREEZE} 流水。
-     *
-     * @param userId  用户 ID
-     * @param asset   资产代码
-     * @param amount  冻结金额
-     * @param orderId 关联订单 ID（幂等键）
-     * @throws com.exchange.common.exception.BusinessException 余额不足时抛出
-     */
-    void freezeAsset(Long userId, String asset, BigDecimal amount, String orderId);
-
-    /**
-     * 解冻资产（撤单时调用）。
-     *
-     * <p>将 {@code amount} 从冻结余额归还到可用余额，同时写 {@link com.exchange.account.api.enums.FundFlowType#UNFREEZE} 流水。
-     */
-    void unfreezeAsset(Long userId, String asset, BigDecimal amount, String orderId);
-
-    /**
-     * 成交结算：扣减冻结余额（买方或卖方），同时入账对手方资产。
-     *
-     * <p>由 {@link com.exchange.account.core.consumer.TradeSettlementConsumer} 在消费
-     * {@code match-results} Kafka 主题后调用；整个结算操作在同一数据库事务内完成。
-     *
-     * @param buyerId   买方用户 ID
-     * @param sellerId  卖方用户 ID
-     * @param baseAsset 基础资产（如 BTC）
-     * @param quoteAsset 计价资产（如 USDT）
-     * @param qty       成交数量（基础资产）
-     * @param quoteAmt  成交金额（计价资产）
-     * @param buyFee    买方手续费（计价资产计收）
-     * @param sellFee   卖方手续费（基础资产计收）
-     * @param tradeId   成交 ID（幂等键）
-     */
-    void settleTrade(Long buyerId, Long sellerId,
-                     String baseAsset, String quoteAsset,
-                     BigDecimal qty, BigDecimal quoteAmt,
-                     BigDecimal buyFee, BigDecimal sellFee,
-                     String tradeId);
 
     /**
      * 将内存账本余额同步到数据库（UPSERT 语义）。

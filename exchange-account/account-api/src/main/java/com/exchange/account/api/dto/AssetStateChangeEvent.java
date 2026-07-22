@@ -75,4 +75,13 @@ public class AssetStateChangeEvent {
 
     /** Cluster 协调时间戳（来自 onSessionMessage 的 timestamp 参数） */
     private long clusterTimestamp;
+
+    /**
+     * 资金流水全局序号（状态机产出编号，无洞递增）。
+     *
+     * <p>每条实际产生状态变更的事件携带一个唯一 seq,发布顺序即 seq 顺序。
+     * persist 侧据此检测事件丢失:若收到的 seq 相对上一条跳号,说明中间有事件
+     * 在"Leader 提交后、发布前崩溃"的窗口里永久丢失,需触发对账。
+     */
+    private long seq;
 }

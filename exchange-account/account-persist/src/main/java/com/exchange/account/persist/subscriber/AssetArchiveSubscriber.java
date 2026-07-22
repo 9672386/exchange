@@ -2,6 +2,8 @@ package com.exchange.account.persist.subscriber;
 
 import com.exchange.account.api.constant.AssetArchiveStream;
 import com.exchange.account.api.dto.AssetStateChangeEvent;
+import com.exchange.common.event.CoreSystemEvent;
+import com.exchange.common.event.SystemEventReporter;
 import com.exchange.account.persist.entity.ArchivePosition;
 import com.exchange.account.persist.repository.ArchivePositionMapper;
 import com.exchange.account.persist.service.AssetPersistService;
@@ -73,6 +75,7 @@ public class AssetArchiveSubscriber implements DisposableBean {
     // ── 依赖注入 ──────────────────────────────────────────────────
     private final AssetPersistService   persistService;
     private final ArchivePositionMapper positionMapper;
+    private final SystemEventReporter   eventReporter;
 
     @Value("${asset.archive.control-channel:aeron:udp?endpoint=localhost:8020}")
     private String archiveControlChannel;
@@ -200,6 +203,10 @@ public class AssetArchiveSubscriber implements DisposableBean {
             buffer.getBytes(offset, bytes);
             AssetStateChangeEvent event = objectMapper.readValue(bytes, AssetStateChangeEvent.class);
 
+            // seq 缺口检测:事件按发布顺序(=seq 顺序)到达,跳号说明有事件永久丢失
+            //（Leader 提交后、发布前崩溃）,触发告警促发对账。
+            checkSeqGap(event);
+
             // 进程内快速去重（仅性能优化；真正的幂等由 t_fund_flow.event_id 唯一键保证）
             if (!processedEventIds.add(event.getEventId())) {
                 log.debug("[AssetArchiveSubscriber] Duplicate eventId={} skipped (in-memory)", event.getEventId());
@@ -230,6 +237,27 @@ public class AssetArchiveSubscriber implements DisposableBean {
             // 抛出让 poll 循环退出 → 外层 retry 重新连接
             throw new RuntimeException("Asset archive processing failed", e);
         }
+    }
+
+    /** 期望的下一个 seq;-1 = 尚未见过任何带 seq 的事件(重启后首条建立基线,不误报)。 */
+    private long expectedNextSeq = -1L;
+
+    /**
+     * 检测 seq 是否连续。事件按发布顺序到达,seq 无洞递增。
+     * 若收到的 seq 大于期望值,说明中间有事件在"提交后未发布"的窗口里永久丢失。
+     */
+    private void checkSeqGap(AssetStateChangeEvent event) {
+        long s = event.getSeq();
+        if (s <= 0) return;   // 无 seq(旧事件/兼容),不检测
+        if (expectedNextSeq >= 0 && s > expectedNextSeq) {
+            long expected = expectedNextSeq, missing = s - expectedNextSeq;
+            eventReporter.record(CoreSystemEvent.EVENT_SEQ_GAP, event.getClusterTimestamp(),
+                    () -> "expected=" + expected + " got=" + s + " missing=" + missing
+                            + " — 事件丢失,DB 落后于账本,需对账");
+            log.error("[AssetArchiveSubscriber] EVENT SEQ GAP: expected={} got={} missing={} eventId={}",
+                    expected, s, missing, event.getEventId());
+        }
+        if (s >= expectedNextSeq) expectedNextSeq = s + 1;   // 前进(重复/乱序的低 seq 不回退)
     }
 
     // =========================================================================

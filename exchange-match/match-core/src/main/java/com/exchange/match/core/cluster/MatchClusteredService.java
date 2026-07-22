@@ -17,11 +17,13 @@ import com.exchange.match.core.service.MatchEngineService;
 import com.exchange.match.core.transport.AeronMatchResultPublisher;
 import com.exchange.match.request.EventCanalReq;
 import com.exchange.match.request.EventNewOrderReq;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import io.aeron.ExclusivePublication;
 import io.aeron.Image;
+import io.aeron.ImageFragmentAssembler;
 import io.aeron.cluster.service.ClientSession;
 import io.aeron.cluster.service.Cluster;
 import io.aeron.cluster.service.ClusteredService;
@@ -324,33 +326,83 @@ public class MatchClusteredService implements ClusteredService {
     // Snapshot — onTakeSnapshot
     // =========================================================================
 
+    /** 每个 symbol 分块最多包含的交易对数（控制单条消息大小 < Aeron maxMessageLength）。 */
+    private static final int SNAPSHOT_SYMBOLS_PER_CHUNK   = 50;
+    /** 每个 position 分块最多包含的仓位数。 */
+    private static final int SNAPSHOT_POSITIONS_PER_CHUNK = 500;
+    /** Snapshot offer 有界重试上限（避免无限自旋阻塞 Service Thread）。 */
+    private static final int SNAPSHOT_OFFER_MAX_RETRIES   = 500_000;
+
     /**
-     * 将当前内存状态序列化为 JSON 写入 Aeron Archive。
+     * 分块写快照。
      *
-     * <p>内容：所有交易对配置、各订单薄中的活跃订单、所有用户仓位。
-     * JSON 单块写入（MVP 方案），对于超大订单薄需拆分为多帧。
+     * <p>旧实现把整个订单簿序列化成一条消息 offer:订单簿一大就超过 Aeron maxMessageLength
+     * → offer 永久失败 → 无限自旋 → 撮合状态机停摆。分块后每条消息大小可控,规模不再受限。
+     *
+     * <h3>格式</h3>
+     * <pre>
+     *   N 条:  {"type":"symbols","symbols":{...},"activeOrders":{...},"orderBookMeta":{...}}
+     *   M 条:  {"type":"positions","positions":{...}}
+     *   1 条:  {"type":"end","logPosition":P,"clusterTimestamp":T,"symbolChunks":N,"positionChunks":M}
+     * </pre>
      */
     @Override
     public void onTakeSnapshot(ExclusivePublication snapshotPublication) {
-        log.info("[MatchCluster] Taking snapshot at logPosition={}", cluster.logPosition());
+        log.info("[MatchCluster] Taking snapshot (chunked) at logPosition={}", cluster.logPosition());
         try {
-            ClusterMatchSnapshot snapshot = buildSnapshot();
-            byte[] snapshotBytes = objectMapper.writeValueAsBytes(snapshot);
+            ClusterMatchSnapshot full = buildSnapshot();
 
-            UnsafeBuffer buf = new UnsafeBuffer(snapshotBytes);
-            long result;
-            // 自旋重试直到 Publication 接受（不应超过 1 次）
-            while ((result = snapshotPublication.offer(buf, 0, buf.capacity())) < 0) {
-                log.warn("[MatchCluster] Snapshot offer back-pressured, result={}", result);
-                Thread.yield();
+            // ── symbol 分块（symbols + activeOrders + orderBookMeta 按交易对一起切）──
+            java.util.Set<String> allSymbols = new java.util.LinkedHashSet<>();
+            allSymbols.addAll(full.getSymbols().keySet());
+            allSymbols.addAll(full.getActiveOrders().keySet());
+            allSymbols.addAll(full.getOrderBookMeta().keySet());
+
+            int symbolChunks = 0;
+            List<String> batch = new ArrayList<>();
+            for (String sym : allSymbols) {
+                batch.add(sym);
+                if (batch.size() >= SNAPSHOT_SYMBOLS_PER_CHUNK) {
+                    offerSnapshotMessage(snapshotPublication, buildSymbolChunk(full, batch));
+                    symbolChunks++;
+                    batch = new ArrayList<>();
+                }
             }
-            final int symbols    = snapshot.getSymbols().size();
-            final int orderBooks = snapshot.getActiveOrders().size();
+            if (!batch.isEmpty()) {
+                offerSnapshotMessage(snapshotPublication, buildSymbolChunk(full, batch));
+                symbolChunks++;
+            }
+
+            // ── position 分块 ──
+            int positionChunks = 0;
+            Map<String, Object> posBatch = new HashMap<>();
+            for (Map.Entry<String, ?> e : full.getPositions().entrySet()) {
+                posBatch.put(e.getKey(), e.getValue());
+                if (posBatch.size() >= SNAPSHOT_POSITIONS_PER_CHUNK) {
+                    offerSnapshotMessage(snapshotPublication, Map.of("type", "positions", "positions", posBatch));
+                    positionChunks++;
+                    posBatch = new HashMap<>();
+                }
+            }
+            if (!posBatch.isEmpty()) {
+                offerSnapshotMessage(snapshotPublication, Map.of("type", "positions", "positions", posBatch));
+                positionChunks++;
+            }
+
+            // ── end 标记 ──
+            offerSnapshotMessage(snapshotPublication, Map.of(
+                    "type",             "end",
+                    "logPosition",      full.getLogPosition(),
+                    "clusterTimestamp", full.getClusterTimestamp(),
+                    "symbolChunks",     symbolChunks,
+                    "positionChunks",   positionChunks));
+
+            final int symCount = allSymbols.size();
+            final int symCk = symbolChunks, posCk = positionChunks;
             eventReporter.record(CoreSystemEvent.SNAPSHOT_TAKEN, cluster.time(),
-                    () -> "symbols=" + symbols + " orderBooks=" + orderBooks
-                            + " bytes=" + snapshotBytes.length);
-            log.info("[MatchCluster] Snapshot written — {} bytes, symbols={}, orderBooks={}",
-                    snapshotBytes.length, symbols, orderBooks);
+                    () -> "symbols=" + symCount + " symbolChunks=" + symCk + " positionChunks=" + posCk);
+            log.info("[MatchCluster] Snapshot written — {} symbols, {} symbol chunks, {} position chunks",
+                    symCount, symbolChunks, positionChunks);
         } catch (Exception e) {
             eventReporter.record(CoreSystemEvent.SNAPSHOT_FAILED, cluster.time(),
                     () -> "cause=" + e.getClass().getSimpleName() + ": " + e.getMessage());
@@ -359,41 +411,142 @@ public class MatchClusteredService implements ClusteredService {
         }
     }
 
+    /** 从全量快照中抽取指定交易对子集,组成一个 symbol 分块消息。 */
+    private Map<String, Object> buildSymbolChunk(ClusterMatchSnapshot full, List<String> syms) {
+        Map<String, Object> symbols = new HashMap<>();
+        Map<String, Object> orders  = new HashMap<>();
+        Map<String, Object> meta    = new HashMap<>();
+        for (String s : syms) {
+            if (full.getSymbols().get(s) != null)       symbols.put(s, full.getSymbols().get(s));
+            if (full.getActiveOrders().get(s) != null)  orders.put(s,  full.getActiveOrders().get(s));
+            if (full.getOrderBookMeta().get(s) != null) meta.put(s,    full.getOrderBookMeta().get(s));
+        }
+        return Map.of("type", "symbols", "symbols", symbols, "activeOrders", orders, "orderBookMeta", meta);
+    }
+
+    /** 有界重试 offer 一条快照消息;终态错误或超限直接抛异常（快照失败必须显式暴露）。 */
+    private void offerSnapshotMessage(ExclusivePublication pub, Map<String, Object> msg) throws IOException {
+        byte[] bytes = objectMapper.writeValueAsBytes(msg);
+        UnsafeBuffer buf = new UnsafeBuffer(bytes);
+        long result;
+        int  retries = 0;
+        while ((result = pub.offer(buf, 0, bytes.length)) < 0) {
+            if (result == io.aeron.Publication.CLOSED
+                    || result == io.aeron.Publication.NOT_CONNECTED
+                    || result == io.aeron.Publication.MAX_POSITION_EXCEEDED) {
+                throw new IllegalStateException("Snapshot publication unavailable, result=" + result);
+            }
+            if (++retries > SNAPSHOT_OFFER_MAX_RETRIES) {
+                throw new IllegalStateException("Snapshot offer timed out after " + retries + " retries");
+            }
+            Thread.yield();
+        }
+    }
+
     // =========================================================================
     // Snapshot — onLoadSnapshot (called from onStart)
     // =========================================================================
 
+    /**
+     * 分块读快照。
+     *
+     * <p>用 {@link ImageFragmentAssembler} 重组跨 MTU 分片的消息(旧实现用裸 handler,
+     * 单条消息超过 MTU 时各分片互相覆盖,快照恢复必然损坏)。兼容旧格式:
+     * 消息含顶层 {@code symbols} 且无 {@code type} 字段时按单消息全量解析。
+     */
     private void loadSnapshot(Image snapshotImage) {
-        final byte[][] captured = {null};
+        ClusterMatchSnapshot snap = new ClusterMatchSnapshot();
+        snap.setSymbols(new HashMap<>());
+        snap.setActiveOrders(new HashMap<>());
+        snap.setOrderBookMeta(new HashMap<>());
+        snap.setPositions(new HashMap<>());
 
-        // 读取单帧 JSON（MVP：假设快照 < 1 Aeron MTU fragment）
-        while (!snapshotImage.isEndOfStream()) {
-            int fragments = snapshotImage.poll((buf, offset, length, hdr) -> {
-                captured[0] = new byte[length];
-                buf.getBytes(offset, captured[0]);
-            }, 1);
-            if (fragments <= 0) {
-                Thread.yield();
+        final int[]      symChunks = {0};
+        final int[]      posChunks = {0};
+        final JsonNode[] endNode   = {null};
+        final boolean[]  legacy    = {false};
+
+        ImageFragmentAssembler assembler = new ImageFragmentAssembler((buf, off, len, hdr) -> {
+            try {
+                byte[] bytes = new byte[len];
+                buf.getBytes(off, bytes);
+                JsonNode node = objectMapper.readTree(bytes);
+                String type = node.path("type").asText("");
+
+                if (type.isEmpty() && node.has("activeOrders")) {
+                    // 旧格式:单消息全量快照
+                    legacy[0] = true;
+                    ClusterMatchSnapshot old = objectMapper.treeToValue(node, ClusterMatchSnapshot.class);
+                    snap.setSymbols(old.getSymbols());
+                    snap.setActiveOrders(old.getActiveOrders());
+                    snap.setOrderBookMeta(old.getOrderBookMeta());
+                    snap.setPositions(old.getPositions() != null ? old.getPositions() : new HashMap<>());
+                    snap.setLogPosition(old.getLogPosition());
+                    snap.setClusterTimestamp(old.getClusterTimestamp());
+                } else if ("symbols".equals(type)) {
+                    snap.getSymbols().putAll(convertMap(node.get("symbols"), Symbol.class));
+                    snap.getOrderBookMeta().putAll(convertMap(node.get("orderBookMeta"),
+                            ClusterMatchSnapshot.OrderBookMeta.class));
+                    node.get("activeOrders").fields().forEachRemaining(e ->
+                            snap.getActiveOrders().put(e.getKey(),
+                                    objectMapper.convertValue(e.getValue(),
+                                            objectMapper.getTypeFactory()
+                                                    .constructCollectionType(List.class, Order.class))));
+                    symChunks[0]++;
+                } else if ("positions".equals(type)) {
+                    snap.getPositions().putAll(convertMap(node.get("positions"), Position.class));
+                    posChunks[0]++;
+                } else if ("end".equals(type)) {
+                    endNode[0] = node;
+                }
+            } catch (IOException ex) {
+                throw new RuntimeException("Snapshot fragment parse failed", ex);
             }
+        });
+
+        while (!snapshotImage.isEndOfStream()) {
+            int fragments = snapshotImage.poll(assembler, 10);
+            if (fragments <= 0) Thread.yield();
         }
 
-        if (captured[0] == null) {
-            log.warn("[MatchCluster] Snapshot image was empty, starting fresh");
-            return;
+        if (endNode[0] == null && !legacy[0]) {
+            if (symChunks[0] == 0 && posChunks[0] == 0) {
+                log.warn("[MatchCluster] Snapshot image was empty, starting fresh");
+                return;
+            }
+            throw new IllegalStateException("Snapshot incomplete: end marker missing");
         }
 
-        try {
-            ClusterMatchSnapshot snapshot = objectMapper.readValue(captured[0], ClusterMatchSnapshot.class);
-            restoreFromSnapshot(snapshot);
-            final int symbols    = snapshot.getSymbols().size();
-            final int orderBooks = snapshot.getActiveOrders().size();
-            eventReporter.record(CoreSystemEvent.SNAPSHOT_RESTORED, cluster.time(),
-                    () -> "symbols=" + symbols + " orderBooks=" + orderBooks
-                            + " logPosition=" + snapshot.getLogPosition());
-            log.info("[MatchCluster] Snapshot restored — symbols={}, orderBooks={}", symbols, orderBooks);
-        } catch (IOException e) {
-            throw new RuntimeException("Snapshot deserialization failed", e);
+        if (!legacy[0]) {
+            JsonNode end = endNode[0];
+            int expSym = end.path("symbolChunks").asInt(-1);
+            int expPos = end.path("positionChunks").asInt(-1);
+            if ((expSym >= 0 && expSym != symChunks[0]) || (expPos >= 0 && expPos != posChunks[0])) {
+                throw new IllegalStateException(String.format(
+                        "Snapshot incomplete: expected symbolChunks=%d/positionChunks=%d, got %d/%d",
+                        expSym, expPos, symChunks[0], posChunks[0]));
+            }
+            snap.setLogPosition(end.path("logPosition").asLong(0L));
+            snap.setClusterTimestamp(end.path("clusterTimestamp").asLong(0L));
         }
+
+        restoreFromSnapshot(snap);
+        final int symbols    = snap.getSymbols().size();
+        final int orderBooks = snap.getActiveOrders().size();
+        eventReporter.record(CoreSystemEvent.SNAPSHOT_RESTORED, cluster.time(),
+                () -> "legacy=" + legacy[0] + " symbols=" + symbols + " orderBooks=" + orderBooks
+                        + " logPosition=" + snap.getLogPosition());
+        log.info("[MatchCluster] Snapshot restored — legacy={}, symbols={}, orderBooks={}",
+                legacy[0], symbols, orderBooks);
+    }
+
+    /** JsonNode 对象 → Map&lt;String, T&gt;。 */
+    private <T> Map<String, T> convertMap(JsonNode node, Class<T> valueType) {
+        if (node == null || node.isNull()) return new HashMap<>();
+        return objectMapper.convertValue(node,
+                objectMapper.getTypeFactory().constructMapType(Map.class,
+                        objectMapper.getTypeFactory().constructType(String.class),
+                        objectMapper.getTypeFactory().constructType(valueType)));
     }
 
     // =========================================================================

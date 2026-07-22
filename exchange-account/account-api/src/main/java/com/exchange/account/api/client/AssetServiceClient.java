@@ -15,8 +15,7 @@ import java.util.List;
  *
  * <p>订单服务在下单前调用 {@link #freezeAsset} 预扣资金，
  * 撤单时调用 {@link #unfreezeAsset} 释放资金。
- * 实际资金划转由 {@link com.exchange.account.core.consumer.TradeSettlementConsumer}
- * 消费 {@code match-results} 主题后异步完成。
+ * 实际资金划转由撮合成交事件驱动，经 Asset Cluster 内存状态机结算后异步落库。
  */
 @FeignClient(name = "exchange-account", path = "/api/asset")
 public interface AssetServiceClient {
