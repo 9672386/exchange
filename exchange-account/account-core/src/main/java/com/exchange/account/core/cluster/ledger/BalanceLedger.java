@@ -453,31 +453,8 @@ public class BalanceLedger {
         return toProcess;
     }
 
-    /**
-     * 批量结算（多用户对）。
-     *
-     * <p>每笔 trade 的 map 中须包含 {@code accountType}（{@link AccountType} 枚举名，默认 SPOT）。
-     */
-    public void batchSettle(List<Map<String, Object>> trades, long clusterTimestamp) {
-        for (Map<String, Object> t : trades) {
-            String tradeId = (String) t.get("tradeId");
-            AccountType accountType = AccountType.valueOf(
-                    (String) t.getOrDefault("accountType", AccountType.SPOT.name()));
-            settleTrade(
-                    ((Number) t.get("buyerId")).longValue(),
-                    ((Number) t.get("sellerId")).longValue(),
-                    accountType,
-                    (String) t.get("baseAsset"),
-                    (String) t.get("quoteAsset"),
-                    new BigDecimal((String) t.get("qty")),
-                    new BigDecimal((String) t.get("quoteAmt")),
-                    new BigDecimal((String) t.getOrDefault("buyFee",  "0")),
-                    new BigDecimal((String) t.getOrDefault("sellFee", "0")),
-                    tradeId,
-                    clusterTimestamp);
-        }
-        log.debug("[BalanceLedger] BATCH_SETTLE OK count={}", trades.size());
-    }
+    // 注:批量结算的逐笔循环已内联到 AssetClusteredService.handleBatchSettle
+    // （为按笔捕获 seqBase 派发事件）,此处不再提供 batchSettle 方法。
 
     // =========================================================================
     // Match Archive 位点管理
