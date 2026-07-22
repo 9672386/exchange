@@ -10,7 +10,7 @@ import java.math.BigDecimal;
  * 单用户单资产余额（内存值对象）。
  *
  * <p>不落库 — 由 {@link BalanceLedger} 持有，状态通过 Aeron Cluster Snapshot 持久化。
- * 真实资金流水异步写入 {@code t_fund_flow}（通过 {@link com.exchange.account.core.service.FundFlowService}）。
+ * 真实资金流水由 account-store 的 FundFlowService 异步写入 {@code t_fund_flow}。
  *
  * <p>所有算术操作返回 {@code this}，便于链式验证。
  */

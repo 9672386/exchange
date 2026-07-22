@@ -1,7 +1,7 @@
 package com.exchange.account.persist.subscriber;
 
+import com.exchange.account.api.constant.AssetArchiveStream;
 import com.exchange.account.api.dto.AssetStateChangeEvent;
-import com.exchange.account.core.cluster.event.AeronArchiveEventPublisher;
 import com.exchange.account.persist.entity.ArchivePosition;
 import com.exchange.account.persist.repository.ArchivePositionMapper;
 import com.exchange.account.persist.service.AssetPersistService;
@@ -66,8 +66,8 @@ import java.util.concurrent.TimeoutException;
 public class AssetArchiveSubscriber implements DisposableBean {
 
     // ── 被复用的常量（与发布者对齐） ──────────────────────────────
-    private static final String RECORDING_CHANNEL = AeronArchiveEventPublisher.RECORDING_CHANNEL;
-    private static final int    RECORDING_STREAM  = AeronArchiveEventPublisher.RECORDING_STREAM;
+    private static final String RECORDING_CHANNEL = AssetArchiveStream.RECORDING_CHANNEL;
+    private static final int    RECORDING_STREAM  = AssetArchiveStream.RECORDING_STREAM;
     private static final int    REPLAY_STREAM     = 1001;
 
     // ── 依赖注入 ──────────────────────────────────────────────────

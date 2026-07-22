@@ -24,7 +24,10 @@
             <artifactId>exchange-common</artifactId>
             <version>${project.version}</version>
         </dependency>
-        
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
         <!-- Spring Boot Starter Web (for annotations) -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -25,13 +25,20 @@
             <version>${project.version}</version>
         </dependency>
         
-        <!-- Account Core Module -->
+        <!-- Account Core Module（纯内存状态机 + Gateway） -->
         <dependency>
             <groupId>com.exchange</groupId>
             <artifactId>account-core</artifactId>
             <version>${project.version}</version>
         </dependency>
-        
+
+        <!-- Account Store Module（DB 投影层：查询余额 / 流水） -->
+        <dependency>
+            <groupId>com.exchange</groupId>
+            <artifactId>account-store</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Spring Boot Starter Web -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

@@ -1,5 +1,6 @@
 package com.exchange.account.core.cluster.event;
 
+import com.exchange.account.api.constant.AssetArchiveStream;
 import com.exchange.account.api.dto.AssetStateChangeEvent;
 import com.exchange.common.event.CoreSystemEvent;
 import com.exchange.common.event.SystemEventReporter;
@@ -44,10 +45,10 @@ import java.nio.ByteBuffer;
 @Slf4j
 public class AeronArchiveEventPublisher implements AssetEventPublisher, AutoCloseable {
 
-    /** IPC channel（进程内，零拷贝，与 Archive 共用同一 Aeron driver） */
-    public static final String RECORDING_CHANNEL = "aeron:ipc";
-    /** Asset 状态变更事件专用 stream ID（与 Cluster 内部 stream 不冲突） */
-    public static final int    RECORDING_STREAM  = 1000;
+    /** IPC channel（复用 account-api 契约常量,发布侧与消费侧单一真相源）。 */
+    public static final String RECORDING_CHANNEL = AssetArchiveStream.RECORDING_CHANNEL;
+    /** Asset 状态变更事件专用 stream ID（复用 account-api 契约常量）。 */
+    public static final int    RECORDING_STREAM  = AssetArchiveStream.RECORDING_STREAM;
 
     private final ObjectMapper objectMapper;
 

@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.exchange</groupId>
+        <artifactId>exchange-account</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>account-store</artifactId>
+    <packaging>jar</packaging>
+    <name>Exchange Account Store</name>
+    <description>
+        资产服务持久化投影层（CQRS 读侧 / 事件落库）。
+
+        <![CDATA[
+        职责：t_user_asset / t_fund_flow 的实体、Mapper、以及 AssetService / FundFlowService
+        的 DB 读写实现。这是内存状态机的**派生投影**，不是权威状态源。
+
+        依赖方向：
+          account-web      → account-store（查询读投影）
+          account-persist  → account-store（消费事件写投影）
+        本模块**不依赖 account-core**——DB 层与内存状态机彻底解耦。
+        ]]>
+    </description>
+
+    <dependencies>
+        <!-- Account API：DTO / 枚举（AccountType、AssetDTO、FundFlowDTO 等） -->
+        <dependency>
+            <groupId>com.exchange</groupId>
+            <artifactId>account-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Common：BusinessException / CommonErrorCode -->
+        <dependency>
+            <groupId>com.exchange</groupId>
+            <artifactId>exchange-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Spring Data JPA（事务支持 @Transactional） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+
+        <!-- MyBatis-Plus：Mapper / LambdaQueryWrapper -->
+        <dependency>
+            <groupId>com.baomidou</groupId>
+            <artifactId>mybatis-plus-boot-starter</artifactId>
+        </dependency>
+
+        <!-- MySQL -->
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

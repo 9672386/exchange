@@ -19,6 +19,7 @@
 
     <modules>
         <module>account-api</module>
+        <module>account-store</module>
         <module>account-core</module>
         <module>account-web</module>
         <module>account-persist</module>

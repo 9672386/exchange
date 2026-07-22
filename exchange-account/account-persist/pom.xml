@@ -29,11 +29,26 @@
             <version>${project.version}</version>
         </dependency>
 
-        <!-- Account Core（实体、Repository、FundFlowService、AssetService） -->
+        <!-- Account Store（DB 投影层：AssetService / FundFlowService / 实体 / Mapper） -->
         <dependency>
             <groupId>com.exchange</groupId>
-            <artifactId>account-core</artifactId>
+            <artifactId>account-store</artifactId>
             <version>${project.version}</version>
+        </dependency>
+
+        <!-- Aeron：AssetArchiveSubscriber 直接使用 Aeron/Archive 客户端消费录制 -->
+        <!-- （录制通道常量已下沉 account-api,不再依赖 account-core） -->
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-archive</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-driver</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-client</artifactId>
         </dependency>
 
         <!-- Spring Boot Web（Actuator 健康检查） -->
