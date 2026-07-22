@@ -1,5 +1,8 @@
 package com.exchange.match.core.service;
 
+import com.exchange.match.enums.OrderSide;
+import com.exchange.match.enums.PositionAction;
+
 import com.exchange.match.core.model.Order;
 import com.exchange.match.core.model.Symbol;
 import com.exchange.match.core.model.SymbolRiskLimitConfig;
@@ -101,8 +104,8 @@ public class OrderValidationService {
             }
             
             // 7. 检查做空支持
-            if (order.getSide() == com.exchange.match.core.model.OrderSide.SELL && 
-                order.getPositionAction() == com.exchange.match.core.model.PositionAction.OPEN) {
+            if (order.getSide() == com.exchange.match.enums.OrderSide.SELL && 
+                order.getPositionAction() == com.exchange.match.enums.PositionAction.OPEN) {
                 if (!symbol.isShortSupported()) {
                     result.setValid(false);
                     result.setErrorCode("SHORT_NOT_SUPPORTED");

@@ -1,5 +1,9 @@
 package com.exchange.match.core.model;
 
+import com.exchange.match.enums.OrderSide;
+import com.exchange.match.enums.OrderType;
+import com.exchange.match.enums.PositionAction;
+
 import lombok.Data;
 
 import java.math.BigDecimal;

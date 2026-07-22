@@ -1,15 +1,15 @@
-package com.exchange.match.core.model;
+package com.exchange.match.enums;
 
 /**
- * 成交方向枚举
+ * 订单方向枚举
  */
-public enum TradeSide {
-    BUY("买入"),
-    SELL("卖出");
+public enum OrderSide {
+    BUY("买单"),
+    SELL("卖单");
     
     private final String description;
     
-    TradeSide(String description) {
+    OrderSide(String description) {
         this.description = description;
     }
     

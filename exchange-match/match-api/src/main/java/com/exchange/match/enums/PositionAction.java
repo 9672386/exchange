@@ -1,4 +1,4 @@
-package com.exchange.match.core.model;
+package com.exchange.match.enums;
 
 import java.math.BigDecimal;
 

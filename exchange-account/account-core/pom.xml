@@ -64,7 +64,7 @@
         <!-- Match Core：TradeSettlementForwarder 需要 MatchResponse / Trade 模型 -->
         <dependency>
             <groupId>com.exchange</groupId>
-            <artifactId>match-core</artifactId>
+            <artifactId>match-api</artifactId>
             <version>${project.version}</version>
             <!-- 仅使用模型类，排除撮合引擎的重型依赖 -->
             <exclusions>

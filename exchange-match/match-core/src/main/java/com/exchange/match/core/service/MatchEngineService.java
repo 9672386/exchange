@@ -1,5 +1,7 @@
 package com.exchange.match.core.service;
 
+import com.exchange.match.model.MatchResponse;
+
 import com.exchange.match.core.memory.MemoryStats;
 import com.exchange.match.core.model.*;
 

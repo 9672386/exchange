@@ -1,5 +1,10 @@
 package com.exchange.match.core.matcher;
 
+import com.exchange.match.enums.OrderSide;
+import com.exchange.match.enums.PositionAction;
+import com.exchange.match.model.Trade;
+import com.exchange.match.enums.TradeSide;
+
 import com.exchange.common.id.SnowflakeId;
 import com.exchange.match.core.model.*;
 import lombok.extern.slf4j.Slf4j;

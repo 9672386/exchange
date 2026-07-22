@@ -1,4 +1,7 @@
-package com.exchange.match.core.model;
+package com.exchange.match.model;
+
+import com.exchange.match.enums.TradeSide;
+import com.exchange.match.enums.PositionAction;
 
 import lombok.Data;
 

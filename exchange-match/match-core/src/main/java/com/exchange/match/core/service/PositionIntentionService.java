@@ -4,7 +4,7 @@ import com.exchange.match.core.model.PositionBalance;
 import com.exchange.match.core.memory.MemoryManager;
 import com.exchange.match.core.model.OrderBook;
 import com.exchange.match.core.model.Position;
-import com.exchange.match.core.model.PositionSide;
+import com.exchange.match.enums.PositionSide;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;

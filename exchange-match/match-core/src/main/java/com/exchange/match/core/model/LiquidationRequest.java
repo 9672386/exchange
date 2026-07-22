@@ -1,5 +1,7 @@
 package com.exchange.match.core.model;
 
+import com.exchange.match.enums.OrderSide;
+
 import lombok.Data;
 
 import java.math.BigDecimal;

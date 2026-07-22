@@ -1,8 +1,8 @@
 package com.exchange.account.core.cluster.client;
 
 import com.exchange.account.core.gateway.AssetGatewayService;
-import com.exchange.match.core.model.MatchResponse;
-import com.exchange.match.core.model.Trade;
+import com.exchange.match.model.MatchResponse;
+import com.exchange.match.model.Trade;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;

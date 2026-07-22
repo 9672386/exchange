@@ -1,4 +1,4 @@
-package com.exchange.match.core.model;
+package com.exchange.match.enums;
 
 /**
  * 撮合状态枚举

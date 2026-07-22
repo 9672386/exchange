@@ -1,6 +1,6 @@
 package com.exchange.match.core.transport;
 
-import com.exchange.match.core.model.MatchResponse;
+import com.exchange.match.model.MatchResponse;
 import com.exchange.transport.aeron.config.AeronConfigFactory;
 import com.exchange.transport.aeron.config.AeronConfigFactory.PublisherChannelConfig;
 import com.fasterxml.jackson.databind.ObjectMapper;

@@ -1,5 +1,7 @@
 package com.exchange.match.core.service;
 
+import com.exchange.match.model.MatchResponse;
+
 import com.exchange.match.core.model.MatchEngineSnapshot;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;

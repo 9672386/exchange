@@ -1,5 +1,8 @@
 package com.exchange.match.core.event.handler;
 
+import com.exchange.match.model.MatchResponse;
+import com.exchange.match.enums.MatchStatus;
+
 import com.exchange.match.core.event.EventHandler;
 import com.exchange.match.core.event.MatchEvent;
 import com.exchange.match.core.memory.MemoryManager;

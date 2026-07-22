@@ -1,5 +1,8 @@
 package com.exchange.match.core.model;
 
+import com.exchange.match.enums.OrderSide;
+import com.exchange.match.enums.OrderType;
+
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 

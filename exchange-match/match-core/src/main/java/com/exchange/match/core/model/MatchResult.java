@@ -1,5 +1,8 @@
 package com.exchange.match.core.model;
 
+import com.exchange.match.enums.MatchStatus;
+import com.exchange.match.model.Trade;
+
 import lombok.Data;
 
 import java.math.BigDecimal;

@@ -1,12 +1,19 @@
 package com.exchange.match.core.event.handler;
 
+import com.exchange.match.enums.MatchStatus;
+import com.exchange.match.enums.OrderSide;
+import com.exchange.match.enums.OrderType;
+import com.exchange.match.enums.PositionAction;
+import com.exchange.match.enums.PositionSide;
+import com.exchange.match.model.Trade;
+
 import com.exchange.match.core.event.EventHandler;
 import com.exchange.match.core.event.MatchEvent;
 import com.exchange.match.core.memory.MemoryManager;
 import com.exchange.match.core.matcher.OrderMatcher;
 import com.exchange.match.core.matcher.OrderMatcherFactory;
 import com.exchange.match.core.model.*;
-import com.exchange.match.core.model.MatchResponse;
+import com.exchange.match.model.MatchResponse;
 import com.exchange.match.core.transport.AeronMatchResultPublisher;
 import com.exchange.match.enums.EventType;
 import com.exchange.match.request.EventNewOrderReq;

@@ -1,5 +1,11 @@
 package com.exchange.match.core.service;
 
+import com.exchange.match.enums.OrderSide;
+import com.exchange.match.enums.OrderType;
+import com.exchange.match.enums.PositionAction;
+import com.exchange.match.enums.PositionSide;
+import com.exchange.match.model.Trade;
+
 import com.exchange.match.core.model.*;
 import com.exchange.match.core.memory.MemoryManager;
 import lombok.extern.slf4j.Slf4j;

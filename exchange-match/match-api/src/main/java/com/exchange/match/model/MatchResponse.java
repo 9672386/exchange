@@ -1,4 +1,10 @@
-package com.exchange.match.core.model;
+package com.exchange.match.model;
+
+import com.exchange.match.enums.OrderSide;
+import com.exchange.match.enums.OrderType;
+import com.exchange.match.enums.MatchStatus;
+import com.exchange.match.enums.PositionSide;
+import com.exchange.match.enums.PositionAction;
 
 import lombok.Data;
 

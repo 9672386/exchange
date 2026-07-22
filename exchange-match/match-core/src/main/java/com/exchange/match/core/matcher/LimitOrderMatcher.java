@@ -1,5 +1,7 @@
 package com.exchange.match.core.matcher;
 
+import com.exchange.match.enums.OrderType;
+
 import com.exchange.match.core.model.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;

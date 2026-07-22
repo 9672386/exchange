@@ -2,9 +2,9 @@ package com.exchange.match.core.matcher;
 
 import com.exchange.match.core.model.Order;
 import com.exchange.match.core.model.OrderBook;
-import com.exchange.match.core.model.OrderType;
+import com.exchange.match.enums.OrderType;
 import com.exchange.match.core.model.Symbol;
-import com.exchange.match.core.model.Trade;
+import com.exchange.match.model.Trade;
 
 import java.util.List;
 

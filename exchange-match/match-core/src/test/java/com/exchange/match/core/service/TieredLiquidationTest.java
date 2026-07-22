@@ -1,5 +1,7 @@
 package com.exchange.match.core.service;
 
+import com.exchange.match.enums.PositionSide;
+
 import com.exchange.match.core.model.*;
 import com.exchange.match.core.memory.MemoryManager;
 import org.junit.jupiter.api.BeforeEach;

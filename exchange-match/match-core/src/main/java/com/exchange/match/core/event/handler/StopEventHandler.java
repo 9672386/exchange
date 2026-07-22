@@ -2,8 +2,8 @@ package com.exchange.match.core.event.handler;
 
 import com.exchange.match.core.event.EventHandler;
 import com.exchange.match.core.event.MatchEvent;
-import com.exchange.match.core.model.MatchResponse;
-import com.exchange.match.core.model.MatchStatus;
+import com.exchange.match.model.MatchResponse;
+import com.exchange.match.enums.MatchStatus;
 import com.exchange.match.enums.EventType;
 import com.exchange.match.request.EventStopReq;
 import lombok.extern.slf4j.Slf4j;

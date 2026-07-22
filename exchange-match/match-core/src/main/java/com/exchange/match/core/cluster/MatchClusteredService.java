@@ -1,5 +1,11 @@
 package com.exchange.match.core.cluster;
 
+import com.exchange.match.model.MatchResponse;
+import com.exchange.match.enums.MatchStatus;
+import com.exchange.match.enums.OrderSide;
+import com.exchange.match.enums.OrderType;
+import com.exchange.match.enums.PositionAction;
+
 import com.exchange.common.event.CoreSystemEvent;
 import com.exchange.common.event.SystemEventReporter;
 import com.exchange.common.id.SnowflakeId;

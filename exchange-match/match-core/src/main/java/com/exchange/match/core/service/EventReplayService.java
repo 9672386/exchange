@@ -1,5 +1,9 @@
 package com.exchange.match.core.service;
 
+import com.exchange.match.model.MatchResponse;
+import com.exchange.match.enums.MatchStatus;
+import com.exchange.match.model.Trade;
+
 import com.exchange.match.core.memory.MemoryManager;
 import com.exchange.match.core.model.*;
 import com.exchange.transport.aeron.config.AeronConfigFactory;
