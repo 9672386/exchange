@@ -6,10 +6,9 @@ import com.exchange.match.core.memory.MemoryManager;
 import com.exchange.match.core.memory.MemoryStats;
 import com.exchange.match.core.model.*;
 import com.exchange.match.core.service.AsyncSnapshotService;
-import com.exchange.match.core.service.BatchKafkaService;
-import com.exchange.match.core.service.KafkaOffsetManager;
 import com.exchange.match.core.service.CommandIdGenerator;
 import com.exchange.match.core.service.SnapshotStorageService;
+import com.exchange.match.core.transport.AeronMatchResultPublisher;
 import com.exchange.match.enums.EventType;
 import com.exchange.match.request.EventSnapshotReq;
 import lombok.extern.slf4j.Slf4j;
@@ -34,18 +33,18 @@ public class SnapshotEventHandler implements EventHandler {
     
     @Autowired
     private MemoryManager memoryManager;
-    
-    @Autowired
-    private BatchKafkaService batchKafkaService;
-    
-    @Autowired
-    private KafkaOffsetManager offsetManager;
-    
+
     @Autowired
     private AsyncSnapshotService asyncSnapshotService;
-    
+
     @Autowired
     private SnapshotStorageService snapshotStorageService;
+
+    /**
+     * 可选注入；非 Aeron 模式下不存在该 Bean，快照仍正常生成，仅不记录 Archive 位点。
+     */
+    @Autowired(required = false)
+    private AeronMatchResultPublisher aeronMatchResultPublisher;
     
     @Override
     public void handle(MatchEvent event) {
@@ -65,14 +64,13 @@ public class SnapshotEventHandler implements EventHandler {
                     // 保存快照到文件
                     String fileName = snapshotStorageService.saveSnapshot(snapshot);
                     
-                    log.info("异步快照处理完成: snapshotId={}, file={}, orderBooks={}, positions={}, symbols={}, orders={}, locks={}, offsets={}", 
+                    log.info("异步快照处理完成: snapshotId={}, file={}, orderBooks={}, positions={}, symbols={}, orders={}, locks={}",
                             snapshot.getSnapshotId(), fileName,
                             snapshot.getOrderBookSnapshots().size(),
                             snapshot.getPositionSnapshots().size(),
                             snapshot.getSymbolSnapshots().size(),
                             snapshot.getOrderSnapshots().size(),
-                            snapshot.getPositionLockSnapshots().size(),
-                            snapshot.getKafkaOffsetSnapshots().size());
+                            snapshot.getPositionLockSnapshots().size());
                 } catch (Exception e) {
                     log.error("保存快照失败: snapshotId={}", snapshot.getSnapshotId(), e);
                 }
@@ -113,16 +111,19 @@ public class SnapshotEventHandler implements EventHandler {
         
         // 生成仓位锁定快照
         snapshot.setPositionLockSnapshots(generatePositionLockSnapshots(snapshotReq));
-        
+
         // 生成内存统计快照
         snapshot.setMemoryStats(generateMemoryStatsSnapshot());
-        
-        // 生成Kafka offset快照
-        snapshot.setKafkaOffsetSnapshots(generateKafkaOffsetSnapshots());
-        
+
         // 记录当前命令ID
         snapshot.setLastCommandId(CommandIdGenerator.getCurrentId());
-        
+
+        // 记录 Archive 位点（供重启后续播 MatchResponse 用）
+        if (aeronMatchResultPublisher != null) {
+            snapshot.setArchivePosition(aeronMatchResultPublisher.getLastPublishedPosition());
+            snapshot.setArchiveRecordingId(aeronMatchResultPublisher.findCurrentRecordingId());
+        }
+
         return snapshot;
     }
     
@@ -306,32 +307,6 @@ public class SnapshotEventHandler implements EventHandler {
         snapshot.setTotalActiveOrders(totalActiveOrders);
         
         return snapshot;
-    }
-    
-    /**
-     * 生成Kafka offset快照
-     */
-    private Map<String, MatchEngineSnapshot.KafkaOffsetSnapshot> generateKafkaOffsetSnapshots() {
-        Map<String, MatchEngineSnapshot.KafkaOffsetSnapshot> snapshots = new HashMap<>();
-        
-        Map<String, KafkaOffsetManager.OffsetStatus> offsetStatus = offsetManager.getAllOffsetStatus();
-        
-        for (Map.Entry<String, KafkaOffsetManager.OffsetStatus> entry : offsetStatus.entrySet()) {
-            String topic = entry.getKey();
-            KafkaOffsetManager.OffsetStatus status = entry.getValue();
-            
-            MatchEngineSnapshot.KafkaOffsetSnapshot snapshot = new MatchEngineSnapshot.KafkaOffsetSnapshot();
-            snapshot.setTopic(topic);
-            snapshot.setCurrentOffset(status.getCurrentOffset());
-            snapshot.setCommittedOffset(status.getCommittedOffset());
-            snapshot.setPendingOffset(status.getPendingOffset());
-            snapshot.setConsistent(status.getCurrentOffset() == status.getCommittedOffset());
-            snapshot.setTimestamp(status.getTimestamp());
-            
-            snapshots.put(topic, snapshot);
-        }
-        
-        return snapshots;
     }
     
     /**

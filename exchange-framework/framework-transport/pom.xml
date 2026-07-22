@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.exchange</groupId>
+        <artifactId>exchange-framework</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>framework-transport</artifactId>
+    <packaging>jar</packaging>
+    <name>Exchange Framework — Transport</name>
+    <description>
+        Aeron MDC 传输层 starter。
+        提供 MediaDriver / Aeron bean 自动装配、Publisher / Subscriber 工厂封装，
+        以及 AWS 环境 interface 绑定安全校验。
+
+        开关：aeron.enabled=false 可完全关闭，业务模块回退纯 Kafka 模式。
+    </description>
+
+    <dependencies>
+        <!-- Aeron 传输核心 -->
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-driver</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-client</artifactId>
+        </dependency>
+
+        <!-- Agrona：DirectBuffer / IdleStrategy 等底层内存工具 -->
+        <dependency>
+            <groupId>org.agrona</groupId>
+            <artifactId>agrona</artifactId>
+        </dependency>
+
+        <!--
+            SLF4J API：@Slf4j 生成的代码引用 org.slf4j.Logger/LoggerFactory。
+            本模块只依赖 spring-boot-autoconfigure（不含日志栈），需显式引入 slf4j-api，
+            否则编译报 "package org.slf4j does not exist"。版本由 spring-boot-dependencies BOM 管理。
+        -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Spring Boot AutoConfigure（不带完整 web stack） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <!-- Jackson：MVP 阶段消息体 JSON 序列化 -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

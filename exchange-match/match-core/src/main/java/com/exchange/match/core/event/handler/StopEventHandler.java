@@ -4,13 +4,9 @@ import com.exchange.match.core.event.EventHandler;
 import com.exchange.match.core.event.MatchEvent;
 import com.exchange.match.core.model.MatchResponse;
 import com.exchange.match.core.model.MatchStatus;
-import com.exchange.match.core.service.BatchKafkaService;
-import com.exchange.match.core.service.CommandIdGenerator;
-import com.exchange.match.core.model.StateChangeEvent;
 import com.exchange.match.enums.EventType;
 import com.exchange.match.request.EventStopReq;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
@@ -19,41 +15,16 @@ import org.springframework.stereotype.Component;
 @Slf4j
 @Component
 public class StopEventHandler implements EventHandler {
-    
-    @Autowired
-    private BatchKafkaService batchKafkaService;
-    
+
     @Override
     public void handle(MatchEvent event) {
         try {
             EventStopReq stopReq = event.getStopReq();
             log.info("处理停止事件");
-            
+
             // 执行停止逻辑
             MatchResponse response = processStopEngine(stopReq);
-            
-            // 只有成功停止才推送状态变动事件
-            if (response.getStatus() == MatchStatus.SUCCESS) {
-                // 生成命令ID
-                long commandId = CommandIdGenerator.nextId();
-                
-                // 创建状态变动事件
-                StateChangeEvent stateChangeEvent = StateChangeEvent.createSuccess(
-                    commandId, 
-                    EventType.STOP, 
-                    stopReq, 
-                    response
-                );
-                
-                // 推送状态变动事件到Kafka
-                batchKafkaService.pushStateChangeEvent(stateChangeEvent);
-                
-                log.info("推送停止状态变动事件: commandId={}", commandId);
-            } else {
-                log.info("停止失败，不推送状态变动事件: status={}, reason={}", 
-                        response.getStatus(), response.getErrorMessage());
-            }
-            
+
             // 设置处理结果
             event.setResult(response);
             

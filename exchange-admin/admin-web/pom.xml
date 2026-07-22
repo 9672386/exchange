@@ -37,6 +37,12 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- Framework Web：全局异常处理 / Jackson 统一配置，引入自动生效 -->
+        <dependency>
+            <groupId>com.exchange</groupId>
+            <artifactId>framework-web</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         
         <!-- Spring Boot Starter Security -->
         <dependency>

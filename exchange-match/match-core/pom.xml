@@ -31,6 +31,23 @@
             <artifactId>exchange-common</artifactId>
             <version>${project.version}</version>
         </dependency>
+
+        <!-- Aeron Transport（MDC 入站/出站） -->
+        <dependency>
+            <groupId>com.exchange</groupId>
+            <artifactId>framework-transport</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <!-- Aeron Cluster：ClusteredService 接口 + ClusteredMediaDriver + ConsensusModule -->
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-cluster</artifactId>
+        </dependency>
+        <!-- Aeron Archive：成交录制/回放（AeronArchive、SourceLocation、FragmentAssembler 来自 aeron-client） -->
+        <dependency>
+            <groupId>io.aeron</groupId>
+            <artifactId>aeron-archive</artifactId>
+        </dependency>
         <!-- Disruptor for high-performance event processing -->
         <dependency>
             <groupId>com.lmax</groupId>

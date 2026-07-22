@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.exchange</groupId>
+        <artifactId>exchange-parent</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../exchange-parent/pom.xml</relativePath>
+    </parent>
+
+    <artifactId>exchange-framework</artifactId>
+    <packaging>pom</packaging>
+    <name>Exchange Framework</name>
+    <description>
+        技术基础设施 umbrella。
+        每个子模块是一个独立的 Spring Boot AutoConfiguration starter，
+        业务模块按需依赖，不强制引入整体。
+
+        命名规范：framework-{concern}
+          framework-transport  Aeron MDC 高性能传输
+          framework-web        Web 层公共配置（异常处理、响应封装）
+          framework-cache      Redis / Redisson 封装（预留）
+          framework-security   JWT / 鉴权封装（预留）
+          framework-monitor    Micrometer / Prometheus 封装（预留）
+
+        starter 规范：
+          1. AutoConfiguration 类加 @ConditionalOnProperty 开关，默认 matchIfMissing=true
+          2. 外化配置用 @ConfigurationProperties(prefix = "framework.xxx")
+          3. META-INF/spring/AutoConfiguration.imports 注册 SPI（Spring Boot 3.x）
+          4. 不依赖任何业务模块（exchange-common 除外）
+    </description>
+
+    <modules>
+        <module>framework-transport</module>
+        <module>framework-web</module>
+    </modules>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+    </dependencies>
+</project>

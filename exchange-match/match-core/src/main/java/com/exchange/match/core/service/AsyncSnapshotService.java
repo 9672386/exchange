@@ -22,9 +22,6 @@ import java.util.concurrent.atomic.AtomicLong;
 public class AsyncSnapshotService implements InitializingBean, DisposableBean {
     
     @Autowired
-    private BatchKafkaService batchKafkaService;
-    
-    @Autowired
     private SnapshotEventHandler snapshotEventHandler;
     
     /**
@@ -155,10 +152,7 @@ public class AsyncSnapshotService implements InitializingBean, DisposableBean {
             
             // 生成快照
             MatchEngineSnapshot snapshot = snapshotGenerator.generateSnapshot(task.snapshotReq);
-            
-            // 推送快照到Kafka
-            batchKafkaService.pushSnapshot(snapshot);
-            
+
             // 完成任务
             task.future.complete(snapshot);
             

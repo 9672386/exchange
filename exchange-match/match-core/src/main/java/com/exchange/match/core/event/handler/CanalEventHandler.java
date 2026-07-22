@@ -4,9 +4,6 @@ import com.exchange.match.core.event.EventHandler;
 import com.exchange.match.core.event.MatchEvent;
 import com.exchange.match.core.memory.MemoryManager;
 import com.exchange.match.core.model.*;
-import com.exchange.match.core.service.BatchKafkaService;
-import com.exchange.match.core.service.CommandIdGenerator;
-import com.exchange.match.core.model.StateChangeEvent;
 import com.exchange.match.enums.EventType;
 import com.exchange.match.request.EventCanalReq;
 import lombok.extern.slf4j.Slf4j;
@@ -23,46 +20,20 @@ import java.util.List;
 @Slf4j
 @Component
 public class CanalEventHandler implements EventHandler {
-    
+
     @Autowired
     private MemoryManager memoryManager;
-    
-    @Autowired
-    private BatchKafkaService batchKafkaService;
-    
+
     @Override
     public void handle(MatchEvent event) {
         try {
             EventCanalReq canalReq = event.getCanalReq();
-            log.info("处理撤单事件: orderId={}, userId={}, symbol={}", 
+            log.info("处理撤单事件: orderId={}, userId={}, symbol={}",
                     canalReq.getOrderId(), canalReq.getUserId(), canalReq.getSymbol());
-            
+
             // 执行撤单逻辑
             MatchResponse response = processCancelOrder(canalReq);
-            
-            // 只有成功撤单才推送状态变动事件
-            if (response.getStatus() == MatchStatus.SUCCESS) {
-                // 生成命令ID
-                long commandId = CommandIdGenerator.nextId();
-                
-                // 创建状态变动事件
-                StateChangeEvent stateChangeEvent = StateChangeEvent.createSuccess(
-                    commandId, 
-                    EventType.CANAL, 
-                    canalReq, 
-                    response
-                );
-                
-                // 推送状态变动事件到Kafka
-                batchKafkaService.pushStateChangeEvent(stateChangeEvent);
-                
-                log.info("推送撤单状态变动事件: commandId={}, orderId={}", 
-                        commandId, canalReq.getOrderId());
-            } else {
-                log.info("撤单失败，不推送状态变动事件: orderId={}, status={}, reason={}", 
-                        canalReq.getOrderId(), response.getStatus(), response.getErrorMessage());
-            }
-            
+
             // 设置处理结果
             event.setResult(response);
             

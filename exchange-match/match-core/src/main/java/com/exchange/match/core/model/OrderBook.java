@@ -7,6 +7,7 @@ import java.math.BigDecimal;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * 订单薄内存模型
@@ -22,14 +23,23 @@ public class OrderBook {
     private String symbol;
     
     /**
-     * 买单队列（价格从高到低排序，同价格按时间排序）
+     * 买单队列（价格从高到低排序，同价格按时间排序）。
+     *
+     * <p>外层 Map 使用 {@link ConcurrentSkipListMap} 保证价格层级的并发安全；
+     * 内层 List 使用 {@link CopyOnWriteArrayList}：
+     * Disruptor 单线程写（addOrder/removeOrder/updateOrder）+ REST 多线程读（深度查询）。
+     * CopyOnWriteArrayList 迭代时永不抛 {@link ConcurrentModificationException}，
+     * 写入时复制底层数组，写少读多场景下开销可接受。
      */
-    private final NavigableMap<BigDecimal, LinkedList<Order>> buyOrders = new ConcurrentSkipListMap<>(Collections.reverseOrder());
-    
+    private final NavigableMap<BigDecimal, CopyOnWriteArrayList<Order>> buyOrders =
+            new ConcurrentSkipListMap<>(Collections.reverseOrder());
+
     /**
-     * 卖单队列（价格从低到高排序，同价格按时间排序）
+     * 卖单队列（价格从低到高排序，同价格按时间排序）。
+     * 线程安全策略同 {@link #buyOrders}。
      */
-    private final NavigableMap<BigDecimal, LinkedList<Order>> sellOrders = new ConcurrentSkipListMap<>();
+    private final NavigableMap<BigDecimal, CopyOnWriteArrayList<Order>> sellOrders =
+            new ConcurrentSkipListMap<>();
     
     /**
      * 订单ID到订单的映射
@@ -37,7 +47,12 @@ public class OrderBook {
     private final Map<String, Order> orderMap = new ConcurrentHashMap<>();
     
     /**
-     * 用户ID到订单列表的映射
+     * 用户ID到订单列表的映射。
+     *
+     * <p>Value 使用 {@link CopyOnWriteArrayList}：
+     * Disruptor 单线程写（addOrder/removeOrder/updateOrder）+ REST 多线程读（getUserOrders）。
+     * 旧实现用 ArrayList，REST 线程并发读时触发 {@link ConcurrentModificationException}。
+     * CopyOnWriteArrayList 读取时无锁，写入时复制底层数组，写少读多场景下开销可接受。
      */
     private final Map<Long, List<Order>> userOrders = new ConcurrentHashMap<>();
     
@@ -84,13 +99,13 @@ public class OrderBook {
         orderMap.put(order.getOrderId(), order);
         
         // 添加到用户订单列表
-        userOrders.computeIfAbsent(order.getUserId(), k -> new ArrayList<>()).add(order);
+        userOrders.computeIfAbsent(order.getUserId(), k -> new CopyOnWriteArrayList<>()).add(order);
         
         // 添加到价格队列（按时间顺序添加到链表末尾）
-        NavigableMap<BigDecimal, LinkedList<Order>> orders = 
+        NavigableMap<BigDecimal, CopyOnWriteArrayList<Order>> orders = 
                 order.getSide() == OrderSide.BUY ? buyOrders : sellOrders;
         
-        orders.computeIfAbsent(order.getPrice(), k -> new LinkedList<>()).addLast(order);
+        orders.computeIfAbsent(order.getPrice(), k -> new CopyOnWriteArrayList<>()).add(order);
         
         updateLastUpdateTime();
         log.debug("添加订单: symbol={}, orderId={}, price={}, quantity={}, createTime={}", 
@@ -116,10 +131,10 @@ public class OrderBook {
         }
         
         // 从价格队列移除
-        NavigableMap<BigDecimal, LinkedList<Order>> orders = 
+        NavigableMap<BigDecimal, CopyOnWriteArrayList<Order>> orders = 
                 order.getSide() == OrderSide.BUY ? buyOrders : sellOrders;
         
-        LinkedList<Order> priceLevel = orders.get(order.getPrice());
+        CopyOnWriteArrayList<Order> priceLevel = orders.get(order.getPrice());
         if (priceLevel != null) {
             priceLevel.removeIf(o -> o.getOrderId().equals(orderId));
             if (priceLevel.isEmpty()) {
@@ -160,10 +175,10 @@ public class OrderBook {
             }
             
             // 更新价格队列
-            NavigableMap<BigDecimal, LinkedList<Order>> orders = 
+            NavigableMap<BigDecimal, CopyOnWriteArrayList<Order>> orders = 
                     order.getSide() == OrderSide.BUY ? buyOrders : sellOrders;
             
-            LinkedList<Order> priceLevel = orders.get(order.getPrice());
+            CopyOnWriteArrayList<Order> priceLevel = orders.get(order.getPrice());
             if (priceLevel != null) {
                 for (int i = 0; i < priceLevel.size(); i++) {
                     if (priceLevel.get(i).getOrderId().equals(order.getOrderId())) {
@@ -200,7 +215,7 @@ public class OrderBook {
         List<PriceLevel> result = new ArrayList<>();
         int count = 0;
         
-        for (Map.Entry<BigDecimal, LinkedList<Order>> entry : buyOrders.entrySet()) {
+        for (Map.Entry<BigDecimal, CopyOnWriteArrayList<Order>> entry : buyOrders.entrySet()) {
             if (count >= depth) break;
             
             BigDecimal price = entry.getKey();
@@ -222,7 +237,7 @@ public class OrderBook {
         List<PriceLevel> result = new ArrayList<>();
         int count = 0;
         
-        for (Map.Entry<BigDecimal, LinkedList<Order>> entry : sellOrders.entrySet()) {
+        for (Map.Entry<BigDecimal, CopyOnWriteArrayList<Order>> entry : sellOrders.entrySet()) {
             if (count >= depth) break;
             
             BigDecimal price = entry.getKey();
@@ -336,16 +351,16 @@ public class OrderBook {
     }
     
     /**
-     * 获取买单队列
+     * 获取买单队列（外层 ConcurrentSkipListMap + 内层 CopyOnWriteArrayList，读写均线程安全）。
      */
-    public NavigableMap<BigDecimal, LinkedList<Order>> getBuyOrders() {
+    public NavigableMap<BigDecimal, CopyOnWriteArrayList<Order>> getBuyOrders() {
         return buyOrders;
     }
-    
+
     /**
-     * 获取卖单队列
+     * 获取卖单队列（外层 ConcurrentSkipListMap + 内层 CopyOnWriteArrayList，读写均线程安全）。
      */
-    public NavigableMap<BigDecimal, LinkedList<Order>> getSellOrders() {
+    public NavigableMap<BigDecimal, CopyOnWriteArrayList<Order>> getSellOrders() {
         return sellOrders;
     }
     

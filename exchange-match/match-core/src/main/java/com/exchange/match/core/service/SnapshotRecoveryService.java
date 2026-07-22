@@ -8,7 +8,6 @@ import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -22,12 +21,6 @@ public class SnapshotRecoveryService {
     
     @Autowired
     private MemoryManager memoryManager;
-    
-    @Autowired
-    private KafkaOffsetManager offsetManager;
-    
-    @Autowired
-    private KafkaConsumerService consumerService;
     
     /**
      * 从快照恢复撮合引擎状态
@@ -47,53 +40,22 @@ public class SnapshotRecoveryService {
             
             // 4. 恢复订单数据
             recoverOrders(snapshot.getOrderSnapshots());
-            
+
             // 5. 恢复仓位锁定数据
             recoverPositionLocks(snapshot.getPositionLockSnapshots());
-            
-            // 6. 恢复Kafka offset数据
-            recoverKafkaOffsets(snapshot.getKafkaOffsetSnapshots());
-            
-            // 7. 从快照offset开始消费
-            startConsumingFromSnapshot(snapshot.getKafkaOffsetSnapshots());
-            
-            log.info("快照恢复完成: snapshotId={}, symbols={}, orderBooks={}, positions={}, orders={}, locks={}, offsets={}", 
+
+            log.info("快照恢复完成: snapshotId={}, symbols={}, orderBooks={}, positions={}, orders={}, locks={}",
                     snapshot.getSnapshotId(),
                     snapshot.getSymbolSnapshots().size(),
                     snapshot.getOrderBookSnapshots().size(),
                     snapshot.getPositionSnapshots().size(),
                     snapshot.getOrderSnapshots().size(),
-                    snapshot.getPositionLockSnapshots().size(),
-                    snapshot.getKafkaOffsetSnapshots().size());
+                    snapshot.getPositionLockSnapshots().size());
                     
         } catch (Exception e) {
             log.error("快照恢复失败: snapshotId={}", snapshot.getSnapshotId(), e);
             throw new RuntimeException("快照恢复失败", e);
         }
-    }
-    
-    /**
-     * 从快照offset开始消费
-     */
-    private void startConsumingFromSnapshot(Map<String, MatchEngineSnapshot.KafkaOffsetSnapshot> kafkaOffsetSnapshots) {
-        log.info("从快照offset开始消费: count={}", kafkaOffsetSnapshots.size());
-        
-        Map<String, Long> snapshotOffsets = new HashMap<>();
-        
-        for (Map.Entry<String, MatchEngineSnapshot.KafkaOffsetSnapshot> entry : kafkaOffsetSnapshots.entrySet()) {
-            String topic = entry.getKey();
-            MatchEngineSnapshot.KafkaOffsetSnapshot snapshot = entry.getValue();
-            
-            // 使用committed offset作为消费起点，确保数据连续性
-            snapshotOffsets.put(topic, snapshot.getCommittedOffset());
-            
-            log.info("设置主题{}的消费offset为: {}", topic, snapshot.getCommittedOffset());
-        }
-        
-        // 启动消费者服务，从快照offset开始消费
-        consumerService.startConsumingFromSnapshot(snapshotOffsets);
-        
-        log.info("从快照offset开始消费设置完成");
     }
     
     /**
@@ -241,25 +203,6 @@ public class SnapshotRecoveryService {
                         snapshot.getUserId(), snapshot.getSymbol(), 
                         snapshot.getLockedQuantity(), snapshot.getLockStatus());
             }
-        }
-    }
-    
-    /**
-     * 恢复Kafka offset数据
-     */
-    private void recoverKafkaOffsets(Map<String, MatchEngineSnapshot.KafkaOffsetSnapshot> kafkaOffsetSnapshots) {
-        log.info("恢复Kafka offset数据: count={}", kafkaOffsetSnapshots.size());
-        
-        for (Map.Entry<String, MatchEngineSnapshot.KafkaOffsetSnapshot> entry : kafkaOffsetSnapshots.entrySet()) {
-            String topic = entry.getKey();
-            MatchEngineSnapshot.KafkaOffsetSnapshot snapshot = entry.getValue();
-            
-            // 恢复offset状态
-            offsetManager.setOffset(topic, snapshot.getCurrentOffset());
-            offsetManager.commitOffset(topic, snapshot.getCommittedOffset());
-            
-            log.debug("恢复Kafka offset: topic={}, currentOffset={}, committedOffset={}, consistent={}", 
-                    topic, snapshot.getCurrentOffset(), snapshot.getCommittedOffset(), snapshot.isConsistent());
         }
     }
     

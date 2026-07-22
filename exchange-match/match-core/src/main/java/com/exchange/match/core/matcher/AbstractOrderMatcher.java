@@ -1,12 +1,12 @@
 package com.exchange.match.core.matcher;
 
+import com.exchange.common.id.SnowflakeId;
 import com.exchange.match.core.model.*;
 import lombok.extern.slf4j.Slf4j;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.UUID;
 
 /**
  * 抽象订单匹配器基类
@@ -71,9 +71,9 @@ public abstract class AbstractOrderMatcher implements OrderMatcher {
         List<Trade> trades = new ArrayList<>();
         
         // 获取卖单队列
-        for (java.util.Map.Entry<BigDecimal, java.util.LinkedList<Order>> entry : orderBook.getSellOrders().entrySet()) {
+        for (var entry : orderBook.getSellOrders().entrySet()) {
             BigDecimal sellPrice = entry.getKey();
-            java.util.LinkedList<Order> sellOrders = entry.getValue();
+            java.util.List<Order> sellOrders = entry.getValue();
             
             // 检查价格是否匹配
             if (buyOrder.getPrice().compareTo(sellPrice) < 0) {
@@ -121,9 +121,9 @@ public abstract class AbstractOrderMatcher implements OrderMatcher {
         List<Trade> trades = new ArrayList<>();
         
         // 获取买单队列
-        for (java.util.Map.Entry<BigDecimal, java.util.LinkedList<Order>> entry : orderBook.getBuyOrders().entrySet()) {
+        for (var entry : orderBook.getBuyOrders().entrySet()) {
             BigDecimal buyPrice = entry.getKey();
-            java.util.LinkedList<Order> buyOrders = entry.getValue();
+            java.util.List<Order> buyOrders = entry.getValue();
             
             // 检查价格是否匹配
             if (sellOrder.getPrice().compareTo(buyPrice) > 0) {
@@ -170,7 +170,7 @@ public abstract class AbstractOrderMatcher implements OrderMatcher {
     protected Trade createTrade(Order buyOrder, Order sellOrder, BigDecimal price, 
                               BigDecimal quantity, Symbol symbol) {
         Trade trade = new Trade();
-        trade.setTradeId(UUID.randomUUID().toString());
+        trade.setTradeId(SnowflakeId.nextIdStr());
         trade.setSymbol(buyOrder.getSymbol());
         trade.setBuyOrderId(buyOrder.getOrderId());
         trade.setSellOrderId(sellOrder.getOrderId());
@@ -229,10 +229,10 @@ public abstract class AbstractOrderMatcher implements OrderMatcher {
         
         if (order.getSide() == OrderSide.BUY) {
             // 买单：计算卖单队列中价格<=买单价格的总数量
-            for (java.util.Map.Entry<BigDecimal, java.util.LinkedList<Order>> entry : orderBook.getSellOrders().entrySet()) {
+            for (var entry : orderBook.getSellOrders().entrySet()) {
                 BigDecimal sellPrice = entry.getKey();
                 if (order.getPrice().compareTo(sellPrice) >= 0) {
-                    java.util.LinkedList<Order> sellOrders = entry.getValue();
+                    java.util.List<Order> sellOrders = entry.getValue();
                     for (Order sellOrder : sellOrders) {
                         if (sellOrder.getRemainingQuantity().compareTo(BigDecimal.ZERO) > 0) {
                             totalAvailable = totalAvailable.add(sellOrder.getRemainingQuantity());
@@ -242,10 +242,10 @@ public abstract class AbstractOrderMatcher implements OrderMatcher {
             }
         } else {
             // 卖单：计算买单队列中价格>=卖单价格的总数量
-            for (java.util.Map.Entry<BigDecimal, java.util.LinkedList<Order>> entry : orderBook.getBuyOrders().entrySet()) {
+            for (var entry : orderBook.getBuyOrders().entrySet()) {
                 BigDecimal buyPrice = entry.getKey();
                 if (order.getPrice().compareTo(buyPrice) <= 0) {
-                    java.util.LinkedList<Order> buyOrders = entry.getValue();
+                    java.util.List<Order> buyOrders = entry.getValue();
                     for (Order buyOrder : buyOrders) {
                         if (buyOrder.getRemainingQuantity().compareTo(BigDecimal.ZERO) > 0) {
                             totalAvailable = totalAvailable.add(buyOrder.getRemainingQuantity());

@@ -55,9 +55,9 @@ public class MarketOrderMatcher extends AbstractOrderMatcher {
         }
         
         // 获取卖单队列
-        for (java.util.Map.Entry<BigDecimal, java.util.LinkedList<Order>> entry : orderBook.getSellOrders().entrySet()) {
+        for (var entry : orderBook.getSellOrders().entrySet()) {
             BigDecimal sellPrice = entry.getKey();
-            java.util.LinkedList<Order> sellOrders = entry.getValue();
+            java.util.List<Order> sellOrders = entry.getValue();
             
             // 检查价格是否超过最大可接受价格（滑点控制）
             if (sellPrice.compareTo(maxAcceptablePrice) > 0) {
@@ -130,9 +130,9 @@ public class MarketOrderMatcher extends AbstractOrderMatcher {
         }
         
         // 获取买单队列
-        for (java.util.Map.Entry<BigDecimal, java.util.LinkedList<Order>> entry : orderBook.getBuyOrders().entrySet()) {
+        for (var entry : orderBook.getBuyOrders().entrySet()) {
             BigDecimal buyPrice = entry.getKey();
-            java.util.LinkedList<Order> buyOrders = entry.getValue();
+            java.util.List<Order> buyOrders = entry.getValue();
             
             // 检查价格是否低于最小可接受价格（滑点控制）
             if (buyPrice.compareTo(minAcceptablePrice) < 0) {

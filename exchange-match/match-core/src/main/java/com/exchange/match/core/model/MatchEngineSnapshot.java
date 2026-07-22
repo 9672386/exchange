@@ -62,16 +62,26 @@ public class MatchEngineSnapshot {
      * 内存统计信息
      */
     private MemoryStatsSnapshot memoryStats;
-    
-    /**
-     * Kafka offset信息
-     */
-    private Map<String, KafkaOffsetSnapshot> kafkaOffsetSnapshots;
-    
+
     /**
      * 最后处理的命令ID
      */
     private long lastCommandId;
+
+    /**
+     * 快照生成时刻的 Aeron Archive publication byte position。
+     * 重启后 EventReplayService 从此位置开始重放 MatchResponse，
+     * 将快照之后的成交和撤单补全到内存订单薄。
+     * 未启用 Archive 时为 0（跳过重放）。
+     */
+    private long archivePosition;
+
+    /**
+     * 快照生成时刻的 Aeron Archive recordingId。
+     * 与 archivePosition 配合，直接定位上次录制，避免跨多次重启混淆。
+     * 未启用 Archive 时为 -1。
+     */
+    private long archiveRecordingId = -1L;
     
     /**
      * 撮合引擎状态枚举
@@ -194,18 +204,5 @@ public class MatchEngineSnapshot {
         private long snapshotTime;
         private int totalLockedPositions;
         private int totalActiveOrders;
-    }
-    
-    /**
-     * Kafka Offset快照
-     */
-    @Data
-    public static class KafkaOffsetSnapshot {
-        private String topic;
-        private long currentOffset;
-        private long committedOffset;
-        private long pendingOffset;
-        private boolean consistent;
-        private long timestamp;
     }
 } 

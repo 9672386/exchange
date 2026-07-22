@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.exchange</groupId>
+        <artifactId>exchange-account</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>account-persist</artifactId>
+    <packaging>jar</packaging>
+    <name>Exchange Account Persist</name>
+    <description>
+        独立持久化服务：订阅 Kafka asset-state-changes 主题，将 Asset Cluster 内存账本的状态变更
+        写入 t_fund_flow（资金流水）和 t_user_asset（余额快照）。与 account-web (Cluster 节点)
+        完全解耦，可独立部署、独立扩缩容。
+    </description>
+
+    <dependencies>
+        <!-- Account API（AssetStateChangeEvent DTO） -->
+        <dependency>
+            <groupId>com.exchange</groupId>
+            <artifactId>account-api</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Account Core（实体、Repository、FundFlowService、AssetService） -->
+        <dependency>
+            <groupId>com.exchange</groupId>
+            <artifactId>account-core</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Spring Boot Web（Actuator 健康检查） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- MySQL -->
+        <dependency>
+            <groupId>mysql</groupId>
+            <artifactId>mysql-connector-java</artifactId>
+        </dependency>
+
+        <!-- Lombok -->
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <version>${spring-boot.version}</version>
+                <configuration>
+                    <mainClass>com.exchange.account.persist.AssetPersistApplication</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

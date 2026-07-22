@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.exchange</groupId>
+        <artifactId>exchange-framework</artifactId>
+        <version>1.0.0-SNAPSHOT</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>framework-web</artifactId>
+    <packaging>jar</packaging>
+    <name>Exchange Framework — Web</name>
+    <description>
+        Web 层公共配置 starter。
+        提供全局异常处理、统一响应封装、TraceId 透传，
+        以及 Jackson / CORS 等 Spring MVC 公共配置。
+
+        开关：framework.web.enabled=false 可完全关闭（极少使用）。
+        引入此模块自动生效，无需在业务模块做任何额外配置。
+    </description>
+
+    <dependencies>
+        <!-- exchange-common：ErrorCode / ApiResponse / BusinessException -->
+        <dependency>
+            <groupId>com.exchange</groupId>
+            <artifactId>exchange-common</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Spring Web：ResponseEntity / @RestControllerAdvice / Servlet API -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- Validation：@Valid / ConstraintViolationException -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
+        </dependency>
+
+        <!-- AutoConfigure SPI -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-autoconfigure</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <scope>provided</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

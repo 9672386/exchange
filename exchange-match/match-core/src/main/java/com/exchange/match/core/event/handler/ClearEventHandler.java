@@ -6,9 +6,6 @@ import com.exchange.match.core.memory.MemoryManager;
 import com.exchange.match.core.model.MatchResponse;
 import com.exchange.match.core.model.MatchStatus;
 import com.exchange.match.core.model.OrderBook;
-import com.exchange.match.core.service.BatchKafkaService;
-import com.exchange.match.core.service.CommandIdGenerator;
-import com.exchange.match.core.model.StateChangeEvent;
 import com.exchange.match.enums.EventType;
 import com.exchange.match.request.EventClearReq;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,45 +18,19 @@ import org.springframework.stereotype.Component;
 @Slf4j
 @Component
 public class ClearEventHandler implements EventHandler {
-    
+
     @Autowired
     private MemoryManager memoryManager;
-    
-    @Autowired
-    private BatchKafkaService batchKafkaService;
-    
+
     @Override
     public void handle(MatchEvent event) {
         try {
             EventClearReq clearReq = event.getClearReq();
             log.info("处理清理事件: symbol={}", clearReq.getSymbol());
-            
+
             // 执行清理逻辑
             MatchResponse response = processClearOrders(clearReq);
-            
-            // 只有成功清理才推送状态变动事件
-            if (response.getStatus() == MatchStatus.SUCCESS) {
-                // 生成命令ID
-                long commandId = CommandIdGenerator.nextId();
-                
-                // 创建状态变动事件
-                StateChangeEvent stateChangeEvent = StateChangeEvent.createSuccess(
-                    commandId, 
-                    EventType.CLEAR, 
-                    clearReq, 
-                    response
-                );
-                
-                // 推送状态变动事件到Kafka
-                batchKafkaService.pushStateChangeEvent(stateChangeEvent);
-                
-                log.info("推送清理状态变动事件: commandId={}, symbol={}", 
-                        commandId, clearReq.getSymbol());
-            } else {
-                log.info("清理失败，不推送状态变动事件: symbol={}, status={}, reason={}", 
-                        clearReq.getSymbol(), response.getStatus(), response.getErrorMessage());
-            }
-            
+
             // 设置处理结果
             event.setResult(response);
             

@@ -18,6 +18,9 @@
     <description>Module aggregator for Exchange System</description>
 
     <modules>
+        <!-- Framework Module（技术基础设施 umbrella：transport / web / cache / security …） -->
+        <module>exchange-framework</module>
+
         <!-- Common Module -->
         <module>exchange-common</module>
         
@@ -44,5 +47,8 @@
         
         <!-- Message Module -->
         <module>exchange-message</module>
+
+        <!-- Order Module（订单生命周期管理） -->
+        <module>exchange-order</module>
     </modules>
 </project> 

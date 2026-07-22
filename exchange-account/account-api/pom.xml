@@ -42,5 +42,11 @@
             <groupId>io.swagger.core.v3</groupId>
             <artifactId>swagger-annotations</artifactId>
         </dependency>
+
+        <!-- OpenFeign：AssetServiceClient 使用 @FeignClient（版本由 spring-cloud BOM 管理） -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
     </dependencies>
-</project> 
+</project>

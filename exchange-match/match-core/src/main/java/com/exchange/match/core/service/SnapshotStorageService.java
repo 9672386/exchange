@@ -230,7 +230,7 @@ public class SnapshotStorageService {
             
             List<Path> snapshotFiles = Files.list(storageDir)
                     .filter(path -> path.toString().endsWith(".json"))
-                    .sorted(Comparator.comparing(path -> {
+                    .sorted(Comparator.comparing((Path path) -> {
                         try {
                             return Files.getLastModifiedTime(path).toMillis();
                         } catch (IOException e) {
