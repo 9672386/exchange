@@ -1,8 +1,10 @@
 package com.exchange.match.core.model;
 
+import com.exchange.common.math.FixedPoint;
 import lombok.Data;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDateTime;
 
 /**
@@ -10,6 +12,12 @@ import java.time.LocalDateTime;
  */
 @Data
 public class Symbol {
+
+    /** 手续费率的定点精度(feeRateRaw = feeRate × 10^FEE_SCALE)。 */
+    public static final int FEE_SCALE = 8;
+
+    /** 默认计价资产精度(未显式配置 quoteScale 时的兜底,覆盖 USDT 等主流)。 */
+    private static final int DEFAULT_QUOTE_SCALE = 8;
     
     /**
      * 交易对
@@ -50,6 +58,13 @@ public class Symbol {
      * 价格精度
      */
     private Integer pricePrecision;
+
+    /**
+     * 计价资产精度(quote scale,= 计价币在资产服务的 scale)。
+     * 撮合内部计算成交金额 amount 的定点 scale;须与资产服务 quote 币 scale 一致。
+     * 未配置时兜底 {@link #DEFAULT_QUOTE_SCALE}(生产应显式配置)。
+     */
+    private Integer quoteScale;
     
     /**
      * 最小价格变动单位
@@ -207,11 +222,54 @@ public class Symbol {
     }
     
     /**
-     * 计算手续费
+     * 计算手续费(冷路径,BigDecimal)
      */
     public BigDecimal calculateFee(BigDecimal quantity, BigDecimal price) {
         BigDecimal tradeValue = quantity.multiply(price);
         return tradeValue.multiply(feeRate);
+    }
+
+    // ========== 定点(long)精度访问器,供撮合热路径使用 ==========
+
+    /** 价格 scale(= pricePrecision)。 */
+    public int priceScale() {
+        return pricePrecision != null ? pricePrecision : 8;
+    }
+
+    /** 数量/base scale(= quantityPrecision)。 */
+    public int baseScale() {
+        return quantityPrecision != null ? quantityPrecision : 8;
+    }
+
+    /** 计价 scale(= quoteScale,兜底 {@link #DEFAULT_QUOTE_SCALE})。 */
+    public int quoteScaleOrDefault() {
+        return quoteScale != null ? quoteScale : DEFAULT_QUOTE_SCALE;
+    }
+
+    /** 手续费率定点值(feeRate × 10^FEE_SCALE)。feeRate 为空按 0 处理。 */
+    public long feeRateRaw() {
+        if (feeRate == null) return 0L;
+        return FixedPoint.fromBigDecimal(feeRate, FEE_SCALE, RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 定点计算成交金额 raw(quoteScale):{@code amount = price × quantity}。
+     *
+     * @param priceRaw priceScale 下的价格 raw
+     * @param qtyRaw   baseScale 下的数量 raw
+     */
+    public long calcAmountRaw(long priceRaw, long qtyRaw) {
+        return FixedPoint.mulScaled(priceRaw, qtyRaw, priceScale(), baseScale(),
+                quoteScaleOrDefault(), RoundingMode.HALF_UP);
+    }
+
+    /**
+     * 定点计算手续费 raw(quoteScale):{@code fee = amount × feeRate}。
+     *
+     * @param amountRaw quoteScale 下的成交金额 raw
+     */
+    public long calcFeeRaw(long amountRaw) {
+        return FixedPoint.mulDiv(amountRaw, feeRateRaw(), FixedPoint.pow10(FEE_SCALE), RoundingMode.HALF_UP);
     }
     
     /**

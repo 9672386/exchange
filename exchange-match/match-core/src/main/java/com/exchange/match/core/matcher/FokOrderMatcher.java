@@ -7,7 +7,6 @@ import com.exchange.match.core.model.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 /**
@@ -20,11 +19,11 @@ public class FokOrderMatcher extends AbstractOrderMatcher {
     
     @Override
     protected boolean preMatch(Order order, OrderBook orderBook, Symbol symbol) {
-        // 计算可成交的总数量
-        BigDecimal availableQuantity = calculateAvailableQuantity(order, orderBook);
-        
+        // 计算可成交的总数量（baseScale raw）
+        long availableQuantity = calculateAvailableQuantity(order, orderBook);
+
         // 检查是否可以全部成交
-        if (availableQuantity.compareTo(order.getQuantity()) < 0) {
+        if (availableQuantity < order.getQuantity()) {
             log.debug("FOK订单无法全部成交: orderId={}, required={}, available={}", 
                     order.getOrderId(), order.getQuantity(), availableQuantity);
             return false; // 不继续撮合

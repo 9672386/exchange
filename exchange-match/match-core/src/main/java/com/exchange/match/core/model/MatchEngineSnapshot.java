@@ -147,11 +147,12 @@ public class MatchEngineSnapshot {
         private OrderSide side;
         private OrderType type;
         private PositionAction positionAction;
-        private BigDecimal price;
-        private BigDecimal quantity;
-        private BigDecimal remainingQuantity;
-        private BigDecimal filledQuantity;
-        private BigDecimal averagePrice;
+        // 定点 raw:price=priceScale,量=baseScale(与 Order 内部一致,快照读写两端 long↔long)
+        private long price;
+        private long quantity;
+        private long remainingQuantity;
+        private long filledQuantity;
+        private BigDecimal averagePrice;   // 保持可空 BigDecimal(Order 无此字段,置 null)
         private OrderStatus status;
         private String clientOrderId;
         private String remark;

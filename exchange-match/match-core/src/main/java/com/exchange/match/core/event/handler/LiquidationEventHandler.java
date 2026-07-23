@@ -31,7 +31,27 @@ import java.util.List;
 @Slf4j
 @Component
 public class LiquidationEventHandler implements EventHandler {
-    
+
+    /** 强平价/量 BigDecimal → 定点 long raw(按 symbol scale,DOWN)。 */
+    private long liqPriceRaw(String symbolCode, java.math.BigDecimal p) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return com.exchange.common.math.FixedPoint.fromBigDecimal(
+                p, s != null ? s.priceScale() : 8, java.math.RoundingMode.DOWN);
+    }
+    private long liqQtyRaw(String symbolCode, java.math.BigDecimal q) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return com.exchange.common.math.FixedPoint.fromBigDecimal(
+                q, s != null ? s.baseScale() : 8, java.math.RoundingMode.DOWN);
+    }
+    private java.math.BigDecimal liqPriceBd(String symbolCode, long raw) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return com.exchange.common.math.FixedPoint.toBigDecimal(raw, s != null ? s.priceScale() : 8);
+    }
+    private java.math.BigDecimal liqQtyBd(String symbolCode, long raw) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return com.exchange.common.math.FixedPoint.toBigDecimal(raw, s != null ? s.baseScale() : 8);
+    }
+
     @Autowired
     private MemoryManager memoryManager;
     
@@ -375,8 +395,8 @@ public class LiquidationEventHandler implements EventHandler {
         order.setSymbol(request.getSymbol());
         order.setSide(side);
         order.setType(request.isMarketLiquidation() ? OrderType.MARKET : OrderType.LIMIT);
-        order.setPrice(request.getPrice());
-        order.setQuantity(quantity);
+        order.setPrice(request.getPrice() != null ? liqPriceRaw(request.getSymbol(), request.getPrice()) : 0L);
+        order.setQuantity(liqQtyRaw(request.getSymbol(), quantity));
         order.setPositionAction(PositionAction.CLOSE);
         order.setClientOrderId("LIQUIDATION_" + request.getLiquidationId());
         order.setRemark("强平订单 - " + request.getLiquidationType().getName());
@@ -410,44 +430,45 @@ public class LiquidationEventHandler implements EventHandler {
      */
     private List<Trade> executeMarketLiquidation(Order order, OrderBook orderBook) {
         List<Trade> trades = new ArrayList<>();
-        BigDecimal remainingQuantity = order.getQuantity();
-        
+        String sym = order.getSymbol();
+        long remainingQuantity = order.getQuantity();
+
         if (order.getSide() == OrderSide.BUY) {
             // 买入强平：从卖单薄撮合
             for (List<Order> sellOrders : orderBook.getSellOrders().values()) {
                 for (Order sellOrder : sellOrders) {
-                    if (remainingQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    if (remainingQuantity <= 0) {
                         break;
                     }
-                    
-                    BigDecimal tradeQuantity = remainingQuantity.min(sellOrder.getRemainingQuantity());
-                    BigDecimal tradePrice = sellOrder.getPrice();
-                    
-                    Trade trade = createTrade(order, sellOrder, tradeQuantity, tradePrice);
+
+                    long tradeQuantity = Math.min(remainingQuantity, sellOrder.getRemainingQuantity());
+                    long tradePrice = sellOrder.getPrice();
+
+                    Trade trade = createTrade(order, sellOrder, liqQtyBd(sym, tradeQuantity), liqPriceBd(sym, tradePrice));
                     trades.add(trade);
-                    
-                    remainingQuantity = remainingQuantity.subtract(tradeQuantity);
+
+                    remainingQuantity = Math.subtractExact(remainingQuantity, tradeQuantity);
                 }
             }
         } else {
             // 卖出强平：从买单薄撮合
             for (List<Order> buyOrders : orderBook.getBuyOrders().values()) {
                 for (Order buyOrder : buyOrders) {
-                    if (remainingQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    if (remainingQuantity <= 0) {
                         break;
                     }
-                    
-                    BigDecimal tradeQuantity = remainingQuantity.min(buyOrder.getRemainingQuantity());
-                    BigDecimal tradePrice = buyOrder.getPrice();
-                    
-                    Trade trade = createTrade(buyOrder, order, tradeQuantity, tradePrice);
+
+                    long tradeQuantity = Math.min(remainingQuantity, buyOrder.getRemainingQuantity());
+                    long tradePrice = buyOrder.getPrice();
+
+                    Trade trade = createTrade(buyOrder, order, liqQtyBd(sym, tradeQuantity), liqPriceBd(sym, tradePrice));
                     trades.add(trade);
-                    
-                    remainingQuantity = remainingQuantity.subtract(tradeQuantity);
+
+                    remainingQuantity = Math.subtractExact(remainingQuantity, tradeQuantity);
                 }
             }
         }
-        
+
         return trades;
     }
     
@@ -456,52 +477,53 @@ public class LiquidationEventHandler implements EventHandler {
      */
     private List<Trade> executeLimitLiquidation(Order order, OrderBook orderBook) {
         List<Trade> trades = new ArrayList<>();
-        BigDecimal remainingQuantity = order.getQuantity();
-        
+        String sym = order.getSymbol();
+        long remainingQuantity = order.getQuantity();
+
         if (order.getSide() == OrderSide.BUY) {
             // 买入强平：从卖单薄撮合，价格不超过限价
             for (List<Order> sellOrders : orderBook.getSellOrders().values()) {
                 for (Order sellOrder : sellOrders) {
-                    if (remainingQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    if (remainingQuantity <= 0) {
                         break;
                     }
-                    
-                    if (sellOrder.getPrice().compareTo(order.getPrice()) > 0) {
+
+                    if (sellOrder.getPrice() > order.getPrice()) {
                         break; // 价格超过限价
                     }
-                    
-                    BigDecimal tradeQuantity = remainingQuantity.min(sellOrder.getRemainingQuantity());
-                    BigDecimal tradePrice = sellOrder.getPrice();
-                    
-                    Trade trade = createTrade(order, sellOrder, tradeQuantity, tradePrice);
+
+                    long tradeQuantity = Math.min(remainingQuantity, sellOrder.getRemainingQuantity());
+                    long tradePrice = sellOrder.getPrice();
+
+                    Trade trade = createTrade(order, sellOrder, liqQtyBd(sym, tradeQuantity), liqPriceBd(sym, tradePrice));
                     trades.add(trade);
-                    
-                    remainingQuantity = remainingQuantity.subtract(tradeQuantity);
+
+                    remainingQuantity = Math.subtractExact(remainingQuantity, tradeQuantity);
                 }
             }
         } else {
             // 卖出强平：从买单薄撮合，价格不低于限价
             for (List<Order> buyOrders : orderBook.getBuyOrders().values()) {
                 for (Order buyOrder : buyOrders) {
-                    if (remainingQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    if (remainingQuantity <= 0) {
                         break;
                     }
-                    
-                    if (buyOrder.getPrice().compareTo(order.getPrice()) < 0) {
+
+                    if (buyOrder.getPrice() < order.getPrice()) {
                         break; // 价格低于限价
                     }
-                    
-                    BigDecimal tradeQuantity = remainingQuantity.min(buyOrder.getRemainingQuantity());
-                    BigDecimal tradePrice = buyOrder.getPrice();
-                    
-                    Trade trade = createTrade(buyOrder, order, tradeQuantity, tradePrice);
+
+                    long tradeQuantity = Math.min(remainingQuantity, buyOrder.getRemainingQuantity());
+                    long tradePrice = buyOrder.getPrice();
+
+                    Trade trade = createTrade(buyOrder, order, liqQtyBd(sym, tradeQuantity), liqPriceBd(sym, tradePrice));
                     trades.add(trade);
-                    
-                    remainingQuantity = remainingQuantity.subtract(tradeQuantity);
+
+                    remainingQuantity = Math.subtractExact(remainingQuantity, tradeQuantity);
                 }
             }
         }
-        
+
         return trades;
     }
     

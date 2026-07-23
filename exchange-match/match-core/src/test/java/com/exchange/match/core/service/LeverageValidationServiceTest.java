@@ -50,8 +50,9 @@ public class LeverageValidationServiceTest {
         testOrder.setUserId(1001L);
         testOrder.setSymbol("BTCUSDT");
         testOrder.setLeverage(new BigDecimal("10"));
-        testOrder.setQuantity(new BigDecimal("1.0"));
-        testOrder.setPrice(new BigDecimal("50000"));
+        // Order 价/量为定点 long(scale 8:未注册 symbol 时的默认精度)
+        testOrder.setQuantity(com.exchange.common.math.FixedPoint.fromBigDecimal(new BigDecimal("1.0"), 8, java.math.RoundingMode.DOWN));
+        testOrder.setPrice(com.exchange.common.math.FixedPoint.fromBigDecimal(new BigDecimal("50000"), 8, java.math.RoundingMode.DOWN));
         
         // 创建测试风险限额配置
         testRiskConfig = new SymbolRiskLimitConfig();

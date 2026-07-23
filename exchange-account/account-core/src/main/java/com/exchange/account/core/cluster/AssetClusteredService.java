@@ -11,6 +11,8 @@ import com.exchange.account.core.cluster.ledger.BalanceLedger.FreezeItem;
 import com.exchange.common.event.CoreSystemEvent;
 import com.exchange.common.event.SystemEventReporter;
 import com.exchange.common.id.SnowflakeId;
+import com.exchange.common.math.AssetScaleRegistry;
+import com.exchange.common.math.FixedPoint;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -28,6 +30,7 @@ import org.agrona.concurrent.UnsafeBuffer;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -73,9 +76,17 @@ public class AssetClusteredService implements ClusteredService {
     private final ObjectMapper        objectMapper;
 
     /**
+     * 资产精度注册表(BigDecimal↔定点 long 的边界换算依据)。
+     *
+     * <p>状态机内部账本用 long raw,DTO/事件用 BigDecimal;所有换算都经此表按 asset 取 scale。
+     * 各副本必须持有一致的 scale 表(见 {@link AssetScaleRegistry}),否则同一 raw 代表不同金额。
+     */
+    private final AssetScaleRegistry  scaleRegistry;
+
+    /**
      * 系统事件上报器(仅观测)。
      *
-     * <p>所有调用均传入 cluster timestamp 作为参考时间,状态机内不读 wall-clock。
+         * <p>所有调用均传入 cluster timestamp 作为参考时间,状态机内不读 wall-clock。
      * 计数为节点本地观测数据,不入快照、不参与判定。
      */
     private final SystemEventReporter eventReporter;
@@ -88,22 +99,31 @@ public class AssetClusteredService implements ClusteredService {
 
     private final UnsafeBuffer egressBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(65536));
 
+    /** 便捷/测试构造:统一 scale=8(覆盖 BTC/USDT 等主流精度)。生产请用显式 registry 构造。 */
     public AssetClusteredService(BalanceLedger ledger, AssetEventPublisher eventPublisher) {
-        this(ledger, eventPublisher, SystemEventReporter.noop(), null);
+        this(ledger, eventPublisher, SystemEventReporter.noop(), null, AssetScaleRegistry.uniform(8));
     }
 
     public AssetClusteredService(BalanceLedger ledger, AssetEventPublisher eventPublisher,
                                  SystemEventReporter eventReporter) {
-        this(ledger, eventPublisher, eventReporter, null);
+        this(ledger, eventPublisher, eventReporter, null, AssetScaleRegistry.uniform(8));
     }
 
     public AssetClusteredService(BalanceLedger ledger, AssetEventPublisher eventPublisher,
                                  SystemEventReporter eventReporter,
                                  ClusterRuntimeStatus runtimeStatus) {
+        this(ledger, eventPublisher, eventReporter, runtimeStatus, AssetScaleRegistry.uniform(8));
+    }
+
+    public AssetClusteredService(BalanceLedger ledger, AssetEventPublisher eventPublisher,
+                                 SystemEventReporter eventReporter,
+                                 ClusterRuntimeStatus runtimeStatus,
+                                 AssetScaleRegistry scaleRegistry) {
         this.ledger         = ledger;
         this.eventPublisher = eventPublisher;
         this.eventReporter  = eventReporter != null ? eventReporter : SystemEventReporter.noop();
         this.runtimeStatus  = runtimeStatus;
+        this.scaleRegistry  = scaleRegistry != null ? scaleRegistry : AssetScaleRegistry.uniform(8);
         this.objectMapper   = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -236,11 +256,12 @@ public class AssetClusteredService implements ClusteredService {
         AccountType accountType   = parseAccountType(req, AccountType.SPOT);
         String      asset         = req.get("asset").asText();
         BigDecimal  amt           = new BigDecimal(req.get("amount").asText());
+        long        amtRaw        = toRaw(amt, asset);
         String      orderId       = req.get("orderId").asText();
 
         checkBizNoExpiry(orderId, timestamp, "FREEZE");
         long seqBefore = ledger.currentSeq();
-        ledger.freeze(userId, accountType, asset, amt, orderId, timestamp);
+        ledger.freeze(userId, accountType, asset, amtRaw, orderId, timestamp);
 
         if (ledger.currentSeq() > seqBefore) {   // 实际执行(非幂等跳过)才发事件,保证 seq 无洞
             Balance snap = ledger.getBalance(userId, accountType, asset);
@@ -248,8 +269,8 @@ public class AssetClusteredService implements ClusteredService {
                     .eventId("FREEZE:" + orderId + ":" + userId + ":" + accountType + ":" + asset)
                     .eventType("FREEZE")
                     .userId(userId).accountType(accountType).asset(asset)
-                    .available(snap.getAvailable()).frozen(snap.getFrozen())
-                    .amount(amt.negate())
+                    .available(toBd(snap.getAvailable(), asset)).frozen(toBd(snap.getFrozen(), asset))
+                    .amount(toBd(Math.negateExact(amtRaw), asset))
                     .flowType(FundFlowType.FREEZE)
                     .bizNo(orderId).remark("freeze for order")
                     .seq(ledger.currentSeq())
@@ -270,11 +291,12 @@ public class AssetClusteredService implements ClusteredService {
         AccountType accountType   = parseAccountType(req, AccountType.SPOT);
         String      asset         = req.get("asset").asText();
         BigDecimal  amt           = new BigDecimal(req.get("amount").asText());
+        long        amtRaw        = toRaw(amt, asset);
         String      orderId       = req.get("orderId").asText();
 
         // 撤单解冻不做超时校验：orderId 可能是老单，时间超 30min 也需解冻
         long seqBefore = ledger.currentSeq();
-        ledger.unfreeze(userId, accountType, asset, amt, orderId, timestamp);
+        ledger.unfreeze(userId, accountType, asset, amtRaw, orderId, timestamp);
 
         if (ledger.currentSeq() > seqBefore) {
             Balance snap = ledger.getBalance(userId, accountType, asset);
@@ -282,8 +304,8 @@ public class AssetClusteredService implements ClusteredService {
                     .eventId("UNFREEZE:" + orderId + ":" + userId + ":" + accountType + ":" + asset)
                     .eventType("UNFREEZE")
                     .userId(userId).accountType(accountType).asset(asset)
-                    .available(snap.getAvailable()).frozen(snap.getFrozen())
-                    .amount(amt)
+                    .available(toBd(snap.getAvailable(), asset)).frozen(toBd(snap.getFrozen(), asset))
+                    .amount(toBd(amtRaw, asset))
                     .flowType(FundFlowType.UNFREEZE)
                     .bizNo(orderId).remark("unfreeze for order")
                     .seq(ledger.currentSeq())
@@ -305,21 +327,21 @@ public class AssetClusteredService implements ClusteredService {
         AccountType accountType   = parseAccountType(req, AccountType.SPOT);
         String      baseAsset     = req.get("baseAsset").asText();
         String      quoteAsset    = req.get("quoteAsset").asText();
-        BigDecimal  qty           = new BigDecimal(req.get("qty").asText());
-        BigDecimal  quoteAmt      = new BigDecimal(req.get("quoteAmt").asText());
-        BigDecimal  buyFee        = new BigDecimal(req.get("buyFee").asText());
-        BigDecimal  sellFee       = new BigDecimal(req.get("sellFee").asText());
+        long        qtyRaw        = toRaw(new BigDecimal(req.get("qty").asText()),      baseAsset);
+        long        quoteAmtRaw   = toRaw(new BigDecimal(req.get("quoteAmt").asText()), quoteAsset);
+        long        buyFeeRaw     = toRaw(new BigDecimal(req.get("buyFee").asText()),   quoteAsset);
+        long        sellFeeRaw    = toRaw(new BigDecimal(req.get("sellFee").asText()),  quoteAsset);
         String      tradeId       = req.get("tradeId").asText();
 
         long seqBefore = ledger.currentSeq();
         ledger.settleTrade(buyerId, sellerId, accountType, baseAsset, quoteAsset,
-                qty, quoteAmt, buyFee, sellFee, tradeId, timestamp);
+                qtyRaw, quoteAmtRaw, buyFeeRaw, sellFeeRaw, tradeId, timestamp);
 
         // seq 在所有副本上通过 settleTrade 已推进(4 条流水),此处仅 Leader 用 base 派发事件
         if (ledger.currentSeq() > seqBefore
                 && cluster.role() == Cluster.Role.LEADER && eventPublisher != null) {
             publishSettleEvents(buyerId, sellerId, accountType, baseAsset, quoteAsset,
-                    qty, quoteAmt, buyFee, sellFee, tradeId, timestamp, seqBefore);
+                    qtyRaw, quoteAmtRaw, buyFeeRaw, sellFeeRaw, tradeId, timestamp, seqBefore);
         }
 
         sendEgress(session, AssetMsgType.SETTLE_OK,
@@ -337,24 +359,26 @@ public class AssetClusteredService implements ClusteredService {
 
         String json;
         if (accountType != null && asset != null) {
-            // 查单资产
+            // 查单资产(定点 raw → BigDecimal,保持查询契约不变)
             Balance bal = ledger.getBalance(userId, accountType, asset);
             json = objectMapper.writeValueAsString(Map.of(
                     "correlationId", correlationId,
                     "userId", userId, "accountType", accountType.name(), "asset", asset,
-                    "available", bal.getAvailable(), "frozen", bal.getFrozen()));
+                    "available", toBd(bal.getAvailable(), asset), "frozen", toBd(bal.getFrozen(), asset)));
         } else if (accountType != null) {
             // 查某账户类型下所有资产
-            Map<String, Balance> all = ledger.getAllBalances(userId, accountType);
+            Map<String, Object> balances = balanceDecimalView(ledger.getAllBalances(userId, accountType));
             json = objectMapper.writeValueAsString(Map.of(
                     "correlationId", correlationId,
-                    "userId", userId, "accountType", accountType.name(), "balances", all));
+                    "userId", userId, "accountType", accountType.name(), "balances", balances));
         } else {
             // 查全部账户类型（不传 accountType）
             Map<AccountType, Map<String, Balance>> all = ledger.getAllBalancesByType(userId);
+            Map<String, Object> view = new HashMap<>();
+            all.forEach((type, byAsset) -> view.put(type.name(), balanceDecimalView(byAsset)));
             json = objectMapper.writeValueAsString(Map.of(
                     "correlationId", correlationId,
-                    "userId", userId, "allBalances", all));
+                    "userId", userId, "allBalances", view));
         }
         sendEgress(session, AssetMsgType.BALANCE_RESP, json);
     }
@@ -376,11 +400,12 @@ public class AssetClusteredService implements ClusteredService {
             // 子项可单独指定 accountType，缺省继承批次级别
             AccountType itemType = n.has("accountType")
                     ? AccountType.valueOf(n.get("accountType").asText()) : batchType;
+            String itemAsset = n.get("asset").asText();
             items.add(new FreezeItem(
                     n.get("orderId").asText(),
                     itemType,
-                    n.get("asset").asText(),
-                    new BigDecimal(n.get("amount").asText())));
+                    itemAsset,
+                    toRaw(new BigDecimal(n.get("amount").asText()), itemAsset)));
         }
 
         if (!items.isEmpty()) {
@@ -399,8 +424,8 @@ public class AssetClusteredService implements ClusteredService {
                     .eventId("FREEZE:" + item.orderId() + ":" + userId + ":" + item.accountType() + ":" + item.asset())
                     .eventType("FREEZE")
                     .userId(userId).accountType(item.accountType()).asset(item.asset())
-                    .available(snap.getAvailable()).frozen(snap.getFrozen())
-                    .amount(item.amount().negate())
+                    .available(toBd(snap.getAvailable(), item.asset())).frozen(toBd(snap.getFrozen(), item.asset()))
+                    .amount(toBd(Math.negateExact(item.amount()), item.asset()))
                     .flowType(FundFlowType.FREEZE)
                     .bizNo(item.orderId()).remark("batch freeze for order")
                     .seq(itemSeq)
@@ -449,17 +474,17 @@ public class AssetClusteredService implements ClusteredService {
             AccountType accountType = AccountType.valueOf((String) t.get("accountType"));
             String      baseAsset   = (String) t.get("baseAsset");
             String      quoteAsset  = (String) t.get("quoteAsset");
-            BigDecimal  qty         = new BigDecimal((String) t.get("qty"));
-            BigDecimal  quoteAmt    = new BigDecimal((String) t.get("quoteAmt"));
-            BigDecimal  buyFee      = new BigDecimal((String) t.getOrDefault("buyFee",  "0"));
-            BigDecimal  sellFee     = new BigDecimal((String) t.getOrDefault("sellFee", "0"));
+            long        qtyRaw      = toRaw(new BigDecimal((String) t.get("qty")),                    baseAsset);
+            long        quoteAmtRaw = toRaw(new BigDecimal((String) t.get("quoteAmt")),               quoteAsset);
+            long        buyFeeRaw   = toRaw(new BigDecimal((String) t.getOrDefault("buyFee",  "0")),  quoteAsset);
+            long        sellFeeRaw  = toRaw(new BigDecimal((String) t.getOrDefault("sellFee", "0")),  quoteAsset);
 
             long seqBefore = ledger.currentSeq();
             ledger.settleTrade(buyerId, sellerId, accountType, baseAsset, quoteAsset,
-                    qty, quoteAmt, buyFee, sellFee, tradeId, timestamp);
+                    qtyRaw, quoteAmtRaw, buyFeeRaw, sellFeeRaw, tradeId, timestamp);
             if (ledger.currentSeq() > seqBefore && leader) {
                 publishSettleEvents(buyerId, sellerId, accountType, baseAsset, quoteAsset,
-                        qty, quoteAmt, buyFee, sellFee, tradeId, timestamp, seqBefore);
+                        qtyRaw, quoteAmtRaw, buyFeeRaw, sellFeeRaw, tradeId, timestamp, seqBefore);
             }
         }
 
@@ -480,11 +505,12 @@ public class AssetClusteredService implements ClusteredService {
         AccountType accountType   = requireAccountType(req, "accountType", "CREDIT");
         String      asset         = req.get("asset").asText();
         BigDecimal  amount        = new BigDecimal(req.get("amount").asText());
+        long        amountRaw     = toRaw(amount, asset);
         String      bizNo         = req.get("bizNo").asText();
         String      remark        = req.path("remark").asText("credit");
 
         long seqBefore = ledger.currentSeq();
-        ledger.credit(userId, accountType, asset, amount, bizNo, timestamp);
+        ledger.credit(userId, accountType, asset, amountRaw, bizNo, timestamp);
 
         if (ledger.currentSeq() > seqBefore) {
             Balance snap = ledger.getBalance(userId, accountType, asset);
@@ -492,8 +518,8 @@ public class AssetClusteredService implements ClusteredService {
                     .eventId("CREDIT:" + bizNo + ":" + userId + ":" + accountType + ":" + asset)
                     .eventType("CREDIT")
                     .userId(userId).accountType(accountType).asset(asset)
-                    .available(snap.getAvailable()).frozen(snap.getFrozen())
-                    .amount(amount)
+                    .available(toBd(snap.getAvailable(), asset)).frozen(toBd(snap.getFrozen(), asset))
+                    .amount(toBd(amountRaw, asset))
                     .flowType(FundFlowType.CREDIT)
                     .bizNo(bizNo).remark(remark)
                     .seq(ledger.currentSeq())
@@ -514,11 +540,12 @@ public class AssetClusteredService implements ClusteredService {
         AccountType accountType   = requireAccountType(req, "accountType", "DEBIT");
         String      asset         = req.get("asset").asText();
         BigDecimal  amount        = new BigDecimal(req.get("amount").asText());
+        long        amountRaw     = toRaw(amount, asset);
         String      bizNo         = req.get("bizNo").asText();
         String      remark        = req.path("remark").asText("debit");
 
         long seqBefore = ledger.currentSeq();
-        ledger.debit(userId, accountType, asset, amount, bizNo, timestamp);
+        ledger.debit(userId, accountType, asset, amountRaw, bizNo, timestamp);
 
         if (ledger.currentSeq() > seqBefore) {
             Balance snap = ledger.getBalance(userId, accountType, asset);
@@ -526,8 +553,8 @@ public class AssetClusteredService implements ClusteredService {
                     .eventId("DEBIT:" + bizNo + ":" + userId + ":" + accountType + ":" + asset)
                     .eventType("DEBIT")
                     .userId(userId).accountType(accountType).asset(asset)
-                    .available(snap.getAvailable()).frozen(snap.getFrozen())
-                    .amount(amount.negate())
+                    .available(toBd(snap.getAvailable(), asset)).frozen(toBd(snap.getFrozen(), asset))
+                    .amount(toBd(Math.negateExact(amountRaw), asset))
                     .flowType(FundFlowType.DEBIT)
                     .bizNo(bizNo).remark(remark)
                     .seq(ledger.currentSeq())
@@ -549,12 +576,13 @@ public class AssetClusteredService implements ClusteredService {
         AccountType toType        = requireAccountType(req, "toAccountType", "INTERNAL_TRANSFER");
         String      asset         = req.get("asset").asText();
         BigDecimal  amount        = new BigDecimal(req.get("amount").asText());
+        long        amountRaw     = toRaw(amount, asset);
         String      bizNo         = req.get("bizNo").asText();
         String      remark        = req.path("remark").asText("internal transfer");
 
         checkBizNoExpiry(bizNo, timestamp, "INTERNAL_TRANSFER");
         long seqBefore = ledger.currentSeq();
-        ledger.internalTransfer(userId, fromType, toType, asset, amount, bizNo, timestamp);
+        ledger.internalTransfer(userId, fromType, toType, asset, amountRaw, bizNo, timestamp);
 
         if (ledger.currentSeq() > seqBefore) {   // 2 条流水:OUT=seqBefore+1, IN=seqBefore+2
             // 发布出账事件（TRANSFER_OUT）
@@ -563,8 +591,8 @@ public class AssetClusteredService implements ClusteredService {
                     .eventId("TRANSFER_OUT:" + bizNo + ":" + userId + ":" + fromType + ":" + asset)
                     .eventType("TRANSFER_OUT")
                     .userId(userId).accountType(fromType).asset(asset)
-                    .available(fromSnap.getAvailable()).frozen(fromSnap.getFrozen())
-                    .amount(amount.negate())
+                    .available(toBd(fromSnap.getAvailable(), asset)).frozen(toBd(fromSnap.getFrozen(), asset))
+                    .amount(toBd(Math.negateExact(amountRaw), asset))
                     .flowType(FundFlowType.TRANSFER_OUT)
                     .bizNo(bizNo).remark(remark)
                     .seq(seqBefore + 1)
@@ -576,8 +604,8 @@ public class AssetClusteredService implements ClusteredService {
                     .eventId("TRANSFER_IN:" + bizNo + ":" + userId + ":" + toType + ":" + asset)
                     .eventType("TRANSFER_IN")
                     .userId(userId).accountType(toType).asset(asset)
-                    .available(toSnap.getAvailable()).frozen(toSnap.getFrozen())
-                    .amount(amount)
+                    .available(toBd(toSnap.getAvailable(), asset)).frozen(toBd(toSnap.getFrozen(), asset))
+                    .amount(toBd(amountRaw, asset))
                     .flowType(FundFlowType.TRANSFER_IN)
                     .bizNo(bizNo).remark(remark)
                     .seq(seqBefore + 2)
@@ -863,6 +891,42 @@ public class AssetClusteredService implements ClusteredService {
         }
     }
 
+    // =========================================================================
+    // 定点边界换算 (BigDecimal ↔ long raw)
+    // =========================================================================
+
+    /**
+     * DTO {@link BigDecimal} → 定点 raw(按 asset scale)。
+     *
+     * <p>入参精度超过该资产 scale 时<b>拒绝</b>(fail-closed),绝不静默截断——
+     * 静默截断会丢用户的钱。网关应已做精度校验,此处为状态机侧的安全网。
+     */
+    private long toRaw(BigDecimal v, String asset) {
+        try {
+            return FixedPoint.fromBigDecimal(v, scaleRegistry.scaleOf(asset), RoundingMode.UNNECESSARY);
+        } catch (ArithmeticException e) {
+            throw new IllegalStateException(
+                    "[SCALE] amount precision exceeds scale of asset=" + asset + ": " + v.toPlainString());
+        }
+    }
+
+    /** 定点 raw → {@link BigDecimal}(按 asset scale),精确无损。 */
+    private BigDecimal toBd(long raw, String asset) {
+        return FixedPoint.toBigDecimal(raw, scaleRegistry.scaleOf(asset));
+    }
+
+    /** asset → Balance(long) 视图转 asset → {available,frozen}(BigDecimal),供查询序列化。 */
+    private Map<String, Object> balanceDecimalView(Map<String, Balance> byAsset) {
+        Map<String, Object> out = new HashMap<>();
+        byAsset.forEach((asset, bal) -> {
+            Map<String, BigDecimal> v = new HashMap<>();
+            v.put("available", toBd(bal.getAvailable(), asset));
+            v.put("frozen",    toBd(bal.getFrozen(), asset));
+            out.put(asset, v);
+        });
+        return out;
+    }
+
     private void publishIfLeader(AssetStateChangeEvent event) {
         if (cluster.role() == Cluster.Role.LEADER && eventPublisher != null) {
             eventPublisher.publish(event);
@@ -872,41 +936,45 @@ public class AssetClusteredService implements ClusteredService {
     private void publishSettleEvents(Long buyerId, Long sellerId,
                                      AccountType accountType,
                                      String baseAsset, String quoteAsset,
-                                     BigDecimal qty, BigDecimal quoteAmt,
-                                     BigDecimal buyFee, BigDecimal sellFee,
+                                     long qtyRaw, long quoteAmtRaw,
+                                     long buyFeeRaw, long sellFeeRaw,
                                      String tradeId, long timestamp, long seqBase) {
         // 4 条流水的 seq 依次为 seqBase+1..seqBase+4(与账本 advanceSeq(4) 的顺序一致)
+        // qty 走 baseAsset scale;quoteAmt/fee 走 quoteAsset scale
         Balance bq = ledger.getBalance(buyerId,  accountType, quoteAsset);
         Balance bb = ledger.getBalance(buyerId,  accountType, baseAsset);
         Balance sb = ledger.getBalance(sellerId, accountType, baseAsset);
         Balance sq = ledger.getBalance(sellerId, accountType, quoteAsset);
 
+        long buyerDeductRaw  = Math.addExact(quoteAmtRaw, buyFeeRaw);   // quote
+        long sellerCreditRaw = Math.subtractExact(quoteAmtRaw, sellFeeRaw); // quote
+
         eventPublisher.publish(AssetStateChangeEvent.builder()
                 .eventId("SETTLE_BUY_DEDUCT:" + tradeId + ":" + buyerId + ":" + accountType + ":" + quoteAsset)
                 .eventType("SETTLE_BUYER_DEDUCT").userId(buyerId).accountType(accountType).asset(quoteAsset)
-                .available(bq.getAvailable()).frozen(bq.getFrozen())
-                .amount(quoteAmt.add(buyFee).negate()).flowType(FundFlowType.TRADE_DEDUCT)
+                .available(toBd(bq.getAvailable(), quoteAsset)).frozen(toBd(bq.getFrozen(), quoteAsset))
+                .amount(toBd(Math.negateExact(buyerDeductRaw), quoteAsset)).flowType(FundFlowType.TRADE_DEDUCT)
                 .bizNo(tradeId).remark("settle buy deduct").seq(seqBase + 1).clusterTimestamp(timestamp).build());
 
         eventPublisher.publish(AssetStateChangeEvent.builder()
                 .eventId("SETTLE_BUY_CREDIT:" + tradeId + ":" + buyerId + ":" + accountType + ":" + baseAsset)
                 .eventType("SETTLE_BUYER_CREDIT").userId(buyerId).accountType(accountType).asset(baseAsset)
-                .available(bb.getAvailable()).frozen(bb.getFrozen())
-                .amount(qty).flowType(FundFlowType.TRADE_CREDIT)
+                .available(toBd(bb.getAvailable(), baseAsset)).frozen(toBd(bb.getFrozen(), baseAsset))
+                .amount(toBd(qtyRaw, baseAsset)).flowType(FundFlowType.TRADE_CREDIT)
                 .bizNo(tradeId).remark("settle buy credit").seq(seqBase + 2).clusterTimestamp(timestamp).build());
 
         eventPublisher.publish(AssetStateChangeEvent.builder()
                 .eventId("SETTLE_SELL_DEDUCT:" + tradeId + ":" + sellerId + ":" + accountType + ":" + baseAsset)
                 .eventType("SETTLE_SELLER_DEDUCT").userId(sellerId).accountType(accountType).asset(baseAsset)
-                .available(sb.getAvailable()).frozen(sb.getFrozen())
-                .amount(qty.negate()).flowType(FundFlowType.TRADE_DEDUCT)
+                .available(toBd(sb.getAvailable(), baseAsset)).frozen(toBd(sb.getFrozen(), baseAsset))
+                .amount(toBd(Math.negateExact(qtyRaw), baseAsset)).flowType(FundFlowType.TRADE_DEDUCT)
                 .bizNo(tradeId).remark("settle sell deduct").seq(seqBase + 3).clusterTimestamp(timestamp).build());
 
         eventPublisher.publish(AssetStateChangeEvent.builder()
                 .eventId("SETTLE_SELL_CREDIT:" + tradeId + ":" + sellerId + ":" + accountType + ":" + quoteAsset)
                 .eventType("SETTLE_SELLER_CREDIT").userId(sellerId).accountType(accountType).asset(quoteAsset)
-                .available(sq.getAvailable()).frozen(sq.getFrozen())
-                .amount(quoteAmt.subtract(sellFee)).flowType(FundFlowType.TRADE_CREDIT)
+                .available(toBd(sq.getAvailable(), quoteAsset)).frozen(toBd(sq.getFrozen(), quoteAsset))
+                .amount(toBd(sellerCreditRaw, quoteAsset)).flowType(FundFlowType.TRADE_CREDIT)
                 .bizNo(tradeId).remark("settle sell credit").seq(seqBase + 4).clusterTimestamp(timestamp).build());
     }
 

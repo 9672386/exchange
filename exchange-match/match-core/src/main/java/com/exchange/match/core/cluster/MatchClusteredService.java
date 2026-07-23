@@ -9,6 +9,7 @@ import com.exchange.match.enums.PositionAction;
 import com.exchange.common.event.CoreSystemEvent;
 import com.exchange.common.event.SystemEventReporter;
 import com.exchange.common.id.SnowflakeId;
+import com.exchange.common.math.FixedPoint;
 import com.exchange.match.core.cluster.snapshot.ClusterMatchSnapshot;
 import com.exchange.match.core.memory.MemoryManager;
 import com.exchange.match.core.memory.MemoryStats;
@@ -584,12 +585,19 @@ public class MatchClusteredService implements ClusteredService {
         LocalDateTime clusterTime = LocalDateTime.ofInstant(
                 Instant.ofEpochMilli(clusterTimestamp), ZoneId.of("UTC"));
 
+        // 按 symbol scale 把 DTO 的 BigDecimal 价/量转成定点 long raw(DOWN 截断多余精度,不放大金额)
+        Symbol sym = memoryManager.getSymbol(req.getSymbol());
+        int pScale = sym != null ? sym.priceScale() : 8;
+        int bScale = sym != null ? sym.baseScale() : 8;
+
         Order order = new Order();
         order.setOrderId(req.getOrderId());
         order.setUserId(req.getUserId());
         order.setSymbol(req.getSymbol());
-        order.setPrice(req.getPrice());
-        order.setQuantity(req.getQuantity());
+        order.setPrice(req.getPrice() != null
+                ? FixedPoint.fromBigDecimal(req.getPrice(), pScale, java.math.RoundingMode.DOWN) : 0L);
+        order.setQuantity(req.getQuantity() != null
+                ? FixedPoint.fromBigDecimal(req.getQuantity(), bScale, java.math.RoundingMode.DOWN) : 0L);
         order.setClientOrderId(req.getClientOrderId());
         order.setRemark(req.getRemark());
         order.setCreateTime(clusterTime);   // 覆盖构造器中的 LocalDateTime.now()

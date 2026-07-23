@@ -2,39 +2,38 @@ package com.exchange.match.core.model;
 
 import lombok.Data;
 
-import java.math.BigDecimal;
 import java.util.List;
 
 /**
- * 订单薄快照模型
+ * 订单薄快照模型（撮合内部,价/量为定点 long raw;对外行情在 controller 边界转 BigDecimal）。
  */
 @Data
 public class OrderBookSnapshot {
-    
+
     /**
      * 交易对
      */
     private String symbol;
-    
+
     /**
-     * 最新成交价
+     * 最新成交价（priceScale raw）
      */
-    private BigDecimal lastPrice;
-    
+    private long lastPrice;
+
     /**
-     * 24小时最高价
+     * 24小时最高价（priceScale raw）
      */
-    private BigDecimal highPrice;
-    
+    private long highPrice;
+
     /**
-     * 24小时最低价
+     * 24小时最低价（priceScale raw）
      */
-    private BigDecimal lowPrice;
-    
+    private long lowPrice;
+
     /**
-     * 24小时成交量
+     * 24小时成交量（baseScale raw）
      */
-    private BigDecimal volume24h;
+    private long volume24h;
     
     /**
      * 创建时间

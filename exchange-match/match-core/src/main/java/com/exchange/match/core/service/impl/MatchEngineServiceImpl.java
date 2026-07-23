@@ -13,11 +13,13 @@ import com.exchange.match.core.matcher.OrderMatcher;
 import com.exchange.match.core.matcher.OrderMatcherFactory;
 import com.exchange.match.core.model.*;
 import com.exchange.match.core.service.MatchEngineService;
+import com.exchange.common.math.FixedPoint;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
@@ -35,7 +37,31 @@ public class MatchEngineServiceImpl implements MatchEngineService {
     
     @Autowired
     private OrderMatcherFactory orderMatcherFactory;
-    
+
+    // ===================== 定点边界换算 (Order long ↔ MatchResponse/Symbol BigDecimal) =====================
+
+    /** 该 symbol 的价格 scale(找不到 symbol 兜底 8)。 */
+    private int priceScaleOf(String symbolCode) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return s != null ? s.priceScale() : 8;
+    }
+
+    /** 该 symbol 的数量/base scale(找不到 symbol 兜底 8)。 */
+    private int baseScaleOf(String symbolCode) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return s != null ? s.baseScale() : 8;
+    }
+
+    /** 价格 raw → BigDecimal。 */
+    private BigDecimal priceBd(String symbolCode, long raw) {
+        return FixedPoint.toBigDecimal(raw, priceScaleOf(symbolCode));
+    }
+
+    /** 数量 raw → BigDecimal。 */
+    private BigDecimal qtyBd(String symbolCode, long raw) {
+        return FixedPoint.toBigDecimal(raw, baseScaleOf(symbolCode));
+    }
+
     @Override
     public MatchResponse submitOrder(Order order) {
         MatchResponse response = new MatchResponse();
@@ -44,9 +70,9 @@ public class MatchEngineServiceImpl implements MatchEngineService {
         response.setSymbol(order.getSymbol());
         response.setSide(order.getSide());
         response.setOrderType(order.getType());
-        response.setOrderPrice(order.getPrice());
-        response.setOrderQuantity(order.getQuantity());
-        
+        response.setOrderPrice(priceBd(order.getSymbol(), order.getPrice()));
+        response.setOrderQuantity(qtyBd(order.getSymbol(), order.getQuantity()));
+
         try {
             // 验证标的
             Symbol symbol = memoryManager.getSymbol(order.getSymbol());
@@ -70,30 +96,35 @@ public class MatchEngineServiceImpl implements MatchEngineService {
                 return response;
             }
             
-            // 验证订单参数
-            if (!symbol.isValidPrice(order.getPrice())) {
+            // 验证订单参数（Order 为 long raw，转 BigDecimal 交给 Symbol 冷校验）
+            int priceScale = symbol.priceScale();
+            int baseScale  = symbol.baseScale();
+            BigDecimal priceBdVal = FixedPoint.toBigDecimal(order.getPrice(), priceScale);
+            BigDecimal qtyBdVal   = FixedPoint.toBigDecimal(order.getQuantity(), baseScale);
+
+            if (!symbol.isValidPrice(priceBdVal)) {
                 response.setStatus(MatchStatus.REJECTED);
-                response.setErrorMessage("价格无效: " + order.getPrice());
+                response.setErrorMessage("价格无效: " + priceBdVal);
                 response.setRejectInfo(createRejectInfo(
                     MatchResponse.RejectInfo.RejectType.INVALID_PRICE,
-                    "价格无效: " + order.getPrice()
+                    "价格无效: " + priceBdVal
                 ));
                 return response;
             }
-            
-            if (!symbol.isValidQuantity(order.getQuantity())) {
+
+            if (!symbol.isValidQuantity(qtyBdVal)) {
                 response.setStatus(MatchStatus.REJECTED);
-                response.setErrorMessage("数量无效: " + order.getQuantity());
+                response.setErrorMessage("数量无效: " + qtyBdVal);
                 response.setRejectInfo(createRejectInfo(
                     MatchResponse.RejectInfo.RejectType.INVALID_QUANTITY,
-                    "数量无效: " + order.getQuantity()
+                    "数量无效: " + qtyBdVal
                 ));
                 return response;
             }
-            
-            // 格式化价格和数量
-            order.setPrice(symbol.formatPrice(order.getPrice()));
-            order.setQuantity(symbol.formatQuantity(order.getQuantity()));
+
+            // 格式化价格和数量（Symbol 冷格式化返回 BigDecimal，转回 long raw；DOWN 不放大金额）
+            order.setPrice(FixedPoint.fromBigDecimal(symbol.formatPrice(priceBdVal), priceScale, RoundingMode.DOWN));
+            order.setQuantity(FixedPoint.fromBigDecimal(symbol.formatQuantity(qtyBdVal), baseScale, RoundingMode.DOWN));
             order.setRemainingQuantity(order.getQuantity());
             
             // 根据交易类型设置开平仓动作
@@ -117,8 +148,8 @@ public class MatchEngineServiceImpl implements MatchEngineService {
             
             // 更新响应信息
             response.setTrades(trades);
-            response.setMatchQuantity(order.getFilledQuantity());
-            response.setRemainingQuantity(order.getRemainingQuantity());
+            response.setMatchQuantity(FixedPoint.toBigDecimal(order.getFilledQuantity(), baseScale));
+            response.setRemainingQuantity(FixedPoint.toBigDecimal(order.getRemainingQuantity(), baseScale));
             
             // 计算成交价格和金额
             if (!trades.isEmpty()) {
@@ -219,7 +250,7 @@ public class MatchEngineServiceImpl implements MatchEngineService {
             // 设置撤单信息
             MatchResponse.CancelInfo cancelInfo = new MatchResponse.CancelInfo();
             cancelInfo.setCancelUserId(userId);
-            cancelInfo.setCancelQuantity(order.getRemainingQuantity());
+            cancelInfo.setCancelQuantity(qtyBd(order.getSymbol(), order.getRemainingQuantity()));
             cancelInfo.setCancelReason("用户主动撤单");
             // 将OrderStatus转换为MatchStatus
             MatchStatus previousStatus = convertOrderStatusToMatchStatus(order.getStatus());
@@ -235,12 +266,12 @@ public class MatchEngineServiceImpl implements MatchEngineService {
             response.setSymbol(order.getSymbol());
             response.setSide(order.getSide());
             response.setOrderType(order.getType());
-            response.setOrderPrice(order.getPrice());
-            response.setOrderQuantity(order.getQuantity());
-            response.setMatchQuantity(order.getFilledQuantity());
-            response.setRemainingQuantity(order.getRemainingQuantity());
-            
-            log.info("订单取消成功: orderId={}, userId={}, cancelQuantity={}", 
+            response.setOrderPrice(priceBd(order.getSymbol(), order.getPrice()));
+            response.setOrderQuantity(qtyBd(order.getSymbol(), order.getQuantity()));
+            response.setMatchQuantity(qtyBd(order.getSymbol(), order.getFilledQuantity()));
+            response.setRemainingQuantity(qtyBd(order.getSymbol(), order.getRemainingQuantity()));
+
+            log.info("订单取消成功: orderId={}, userId={}, cancelQuantity={}",
                     orderId, userId, cancelInfo.getCancelQuantity());
             
         } catch (Exception e) {

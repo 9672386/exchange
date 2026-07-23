@@ -78,19 +78,21 @@ public class OrderValidationService {
                 return result;
             }
             
-            // 4. 验证价格
-            if (!symbol.isValidPrice(order.getPrice())) {
+            // 4. 验证价格(Order 为定点 long,按 symbol scale 转 BigDecimal 交冷校验)
+            java.math.BigDecimal priceBdVal = com.exchange.common.math.FixedPoint.toBigDecimal(order.getPrice(), symbol.priceScale());
+            if (!symbol.isValidPrice(priceBdVal)) {
                 result.setValid(false);
                 result.setErrorCode("INVALID_PRICE");
-                result.setErrorMessage("价格无效: " + order.getPrice());
+                result.setErrorMessage("价格无效: " + priceBdVal);
                 return result;
             }
-            
+
             // 5. 验证数量
-            if (!symbol.isValidQuantity(order.getQuantity())) {
+            java.math.BigDecimal qtyBdVal = com.exchange.common.math.FixedPoint.toBigDecimal(order.getQuantity(), symbol.baseScale());
+            if (!symbol.isValidQuantity(qtyBdVal)) {
                 result.setValid(false);
                 result.setErrorCode("INVALID_QUANTITY");
-                result.setErrorMessage("数量无效: " + order.getQuantity());
+                result.setErrorMessage("数量无效: " + qtyBdVal);
                 return result;
             }
             

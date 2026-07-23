@@ -8,7 +8,6 @@ import com.exchange.match.core.model.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.util.List;
 import java.util.ArrayList;
 
@@ -25,17 +24,17 @@ public class PostOnlyOrderMatcher extends AbstractOrderMatcher {
         // POST_ONLY订单需要检查是否会立即成交
         if (order.getSide() == OrderSide.BUY) {
             // 买单：检查价格是否高于等于最优卖价
-            BigDecimal bestAskPrice = orderBook.getBestAsk();
-            if (bestAskPrice != null && order.getPrice().compareTo(bestAskPrice) >= 0) {
-                log.warn("POST_ONLY买单会立即成交，拒绝订单: orderId={}, price={}, bestAsk={}", 
+            Long bestAskPrice = orderBook.getBestAsk();
+            if (bestAskPrice != null && order.getPrice() >= bestAskPrice) {
+                log.warn("POST_ONLY买单会立即成交，拒绝订单: orderId={}, price={}, bestAsk={}",
                         order.getOrderId(), order.getPrice(), bestAskPrice);
                 return false;
             }
         } else {
             // 卖单：检查价格是否低于等于最优买价
-            BigDecimal bestBidPrice = orderBook.getBestBid();
-            if (bestBidPrice != null && order.getPrice().compareTo(bestBidPrice) <= 0) {
-                log.warn("POST_ONLY卖单会立即成交，拒绝订单: orderId={}, price={}, bestBid={}", 
+            Long bestBidPrice = orderBook.getBestBid();
+            if (bestBidPrice != null && order.getPrice() <= bestBidPrice) {
+                log.warn("POST_ONLY卖单会立即成交，拒绝订单: orderId={}, price={}, bestBid={}",
                         order.getOrderId(), order.getPrice(), bestBidPrice);
                 return false;
             }
@@ -61,7 +60,7 @@ public class PostOnlyOrderMatcher extends AbstractOrderMatcher {
     @Override
     protected void postMatch(Order order, OrderBook orderBook, Symbol symbol, List<Trade> trades) {
         // POST_ONLY订单只做挂单，添加到订单薄
-        if (order.getRemainingQuantity().compareTo(BigDecimal.ZERO) > 0) {
+        if (order.getRemainingQuantity() > 0) {
             orderBook.addOrder(order);
             log.debug("POST_ONLY订单已挂单: orderId={}, price={}, quantity={}", 
                     order.getOrderId(), order.getPrice(), order.getRemainingQuantity());

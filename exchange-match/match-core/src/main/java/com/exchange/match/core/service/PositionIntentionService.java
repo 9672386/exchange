@@ -59,22 +59,26 @@ public class PositionIntentionService {
             return new OrderDepthInfo(symbol);
         }
         
+        // 定点求和(baseScale raw)后转 BigDecimal
+        com.exchange.match.core.model.Symbol sym = memoryManager.getSymbol(symbol);
+        int bScale = sym != null ? sym.baseScale() : 8;
+
         // 计算买单深度（前5档）
-        BigDecimal buyDepth = orderBook.getBuyOrders().entrySet().stream()
+        long buyRaw = orderBook.getBuyOrders().entrySet().stream()
                 .limit(5)
-                .map(entry -> entry.getValue().stream()
-                        .map(order -> order.getRemainingQuantity())
-                        .reduce(BigDecimal.ZERO, BigDecimal::add))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        
+                .flatMap(entry -> entry.getValue().stream())
+                .mapToLong(order -> order.getRemainingQuantity())
+                .reduce(0L, Math::addExact);
+        BigDecimal buyDepth = com.exchange.common.math.FixedPoint.toBigDecimal(buyRaw, bScale);
+
         // 计算卖单深度（前5档）
-        BigDecimal sellDepth = orderBook.getSellOrders().entrySet().stream()
+        long sellRaw = orderBook.getSellOrders().entrySet().stream()
                 .limit(5)
-                .map(entry -> entry.getValue().stream()
-                        .map(order -> order.getRemainingQuantity())
-                        .reduce(BigDecimal.ZERO, BigDecimal::add))
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        
+                .flatMap(entry -> entry.getValue().stream())
+                .mapToLong(order -> order.getRemainingQuantity())
+                .reduce(0L, Math::addExact);
+        BigDecimal sellDepth = com.exchange.common.math.FixedPoint.toBigDecimal(sellRaw, bScale);
+
         return new OrderDepthInfo(symbol, buyDepth, sellDepth);
     }
     

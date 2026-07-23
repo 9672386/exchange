@@ -448,8 +448,12 @@ public class LeverageValidationService {
         LeverageValidationResult result = new LeverageValidationResult();
         result.setValid(true);
         
-        // 计算新的持仓价值
-        BigDecimal newPositionValue = order.getQuantity().multiply(order.getPrice());
+        // 计算新的持仓价值(order 价/量为定点 long,按 symbol scale 转 BigDecimal 后相乘)
+        com.exchange.match.core.model.Symbol lvSym = memoryManager.getSymbol(order.getSymbol());
+        int lvPScale = lvSym != null ? lvSym.priceScale() : 8;
+        int lvBScale = lvSym != null ? lvSym.baseScale() : 8;
+        BigDecimal newPositionValue = com.exchange.common.math.FixedPoint.toBigDecimal(order.getQuantity(), lvBScale)
+                .multiply(com.exchange.common.math.FixedPoint.toBigDecimal(order.getPrice(), lvPScale));
         
         // 计算现有持仓总价值
         BigDecimal existingPositionValue = existingPositions.stream()

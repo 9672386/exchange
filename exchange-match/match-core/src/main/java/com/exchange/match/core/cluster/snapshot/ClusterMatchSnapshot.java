@@ -53,10 +53,11 @@ public class ClusterMatchSnapshot {
     /** 订单薄非功能性统计字段（不影响撮合结果，仅用于行情展示） */
     @Data
     public static class OrderBookMeta {
-        private BigDecimal lastPrice;
-        private BigDecimal highPrice;
-        private BigDecimal lowPrice;
-        private BigDecimal volume24h;
+        // 定点 raw:价格 priceScale、成交量 baseScale(与 OrderBook 内部一致)
+        private long lastPrice;
+        private long highPrice;
+        private long lowPrice;
+        private long volume24h;
         private long createTime;
     }
 }

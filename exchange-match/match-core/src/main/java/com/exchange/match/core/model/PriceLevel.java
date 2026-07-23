@@ -4,23 +4,24 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
-import java.math.BigDecimal;
-
 /**
- * 价格层级模型
+ * 价格层级模型（撮合内部,定点 long raw）。
+ *
+ * <p>{@code price}=priceScale raw,{@code totalQuantity}=baseScale raw;
+ * 对外行情查询在 controller 边界转 BigDecimal。
  */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
 public class PriceLevel {
-    
+
     /**
-     * 价格
+     * 价格（priceScale 下的定点 raw）
      */
-    private BigDecimal price;
-    
+    private long price;
+
     /**
-     * 总数量
+     * 总数量（baseScale 下的定点 raw）
      */
-    private BigDecimal totalQuantity;
+    private long totalQuantity;
 } 

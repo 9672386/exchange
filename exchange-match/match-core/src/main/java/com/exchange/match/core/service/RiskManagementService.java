@@ -24,7 +24,24 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class RiskManagementService {
-    
+
+    /** 平仓/减仓数量 BigDecimal → 定点 long raw(按 symbol baseScale,DOWN)。 */
+    private long qtyRaw(String symbolCode, java.math.BigDecimal q) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return com.exchange.common.math.FixedPoint.fromBigDecimal(
+                q, s != null ? s.baseScale() : 8, java.math.RoundingMode.DOWN);
+    }
+    /** 数量 raw → BigDecimal。 */
+    private java.math.BigDecimal qtyBd(String symbolCode, long raw) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return com.exchange.common.math.FixedPoint.toBigDecimal(raw, s != null ? s.baseScale() : 8);
+    }
+    /** 价格 raw → BigDecimal。 */
+    private java.math.BigDecimal priceBd(String symbolCode, long raw) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return com.exchange.common.math.FixedPoint.toBigDecimal(raw, s != null ? s.priceScale() : 8);
+    }
+
     @Autowired
     private MemoryManager memoryManager;
     
@@ -397,7 +414,7 @@ public class RiskManagementService {
         order.setSymbol(symbol);
         order.setSide(side);
         order.setType(OrderType.MARKET); // 市价平仓
-        order.setQuantity(quantity);
+        order.setQuantity(qtyRaw(symbol, quantity));
         order.setPositionAction(PositionAction.CLOSE);
         order.setClientOrderId("TIERED_LIQUIDATION");
         order.setRemark("分档平仓 - " + riskLevel.getName() + "档");
@@ -413,44 +430,45 @@ public class RiskManagementService {
         OrderBook orderBook = memoryManager.getOrCreateOrderBook(order.getSymbol());
         
         List<Trade> trades = new ArrayList<>();
-        BigDecimal remainingQuantity = order.getQuantity();
-        
+        String sym = order.getSymbol();
+        long remainingQuantity = order.getQuantity();
+
         if (order.getSide() == OrderSide.BUY) {
             // 买入平仓：从卖单薄撮合
             for (List<Order> sellOrders : orderBook.getSellOrders().values()) {
                 for (Order sellOrder : sellOrders) {
-                    if (remainingQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    if (remainingQuantity <= 0) {
                         break;
                     }
-                    
-                    BigDecimal tradeQuantity = remainingQuantity.min(sellOrder.getRemainingQuantity());
-                    BigDecimal tradePrice = sellOrder.getPrice();
-                    
-                    Trade trade = createTrade(order, sellOrder, tradeQuantity, tradePrice);
+
+                    long tradeQuantity = Math.min(remainingQuantity, sellOrder.getRemainingQuantity());
+                    long tradePrice = sellOrder.getPrice();
+
+                    Trade trade = createTrade(order, sellOrder, qtyBd(sym, tradeQuantity), priceBd(sym, tradePrice));
                     trades.add(trade);
-                    
-                    remainingQuantity = remainingQuantity.subtract(tradeQuantity);
+
+                    remainingQuantity = Math.subtractExact(remainingQuantity, tradeQuantity);
                 }
             }
         } else {
             // 卖出平仓：从买单薄撮合
             for (List<Order> buyOrders : orderBook.getBuyOrders().values()) {
                 for (Order buyOrder : buyOrders) {
-                    if (remainingQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    if (remainingQuantity <= 0) {
                         break;
                     }
-                    
-                    BigDecimal tradeQuantity = remainingQuantity.min(buyOrder.getRemainingQuantity());
-                    BigDecimal tradePrice = buyOrder.getPrice();
-                    
-                    Trade trade = createTrade(buyOrder, order, tradeQuantity, tradePrice);
+
+                    long tradeQuantity = Math.min(remainingQuantity, buyOrder.getRemainingQuantity());
+                    long tradePrice = buyOrder.getPrice();
+
+                    Trade trade = createTrade(buyOrder, order, qtyBd(sym, tradeQuantity), priceBd(sym, tradePrice));
                     trades.add(trade);
-                    
-                    remainingQuantity = remainingQuantity.subtract(tradeQuantity);
+
+                    remainingQuantity = Math.subtractExact(remainingQuantity, tradeQuantity);
                 }
             }
         }
-        
+
         return trades;
     }
     
@@ -547,7 +565,7 @@ public class RiskManagementService {
         order.setSymbol(symbol);
         order.setSide(positionSide == PositionSide.LONG ? OrderSide.SELL : OrderSide.BUY);
         order.setType(OrderType.MARKET); // 市价减仓
-        order.setQuantity(quantity);
+        order.setQuantity(qtyRaw(symbol, quantity));
         order.setPositionAction(PositionAction.CLOSE);
         order.setClientOrderId("RISK_REDUCTION");
         order.setRemark("风险降档减仓");
@@ -563,40 +581,41 @@ public class RiskManagementService {
         OrderBook orderBook = memoryManager.getOrCreateOrderBook(order.getSymbol());
         
         List<Trade> trades = new ArrayList<>();
-        BigDecimal remainingQuantity = order.getQuantity();
-        
+        String sym = order.getSymbol();
+        long remainingQuantity = order.getQuantity();
+
         if (order.getSide() == OrderSide.BUY) {
             // 买入减仓：从卖单薄撮合
             for (List<Order> sellOrders : orderBook.getSellOrders().values()) {
                 for (Order sellOrder : sellOrders) {
-                    if (remainingQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    if (remainingQuantity <= 0) {
                         break;
                     }
-                    
-                    BigDecimal tradeQuantity = remainingQuantity.min(sellOrder.getRemainingQuantity());
-                    BigDecimal tradePrice = sellOrder.getPrice();
-                    
-                    Trade trade = createTrade(order, sellOrder, tradeQuantity, tradePrice);
+
+                    long tradeQuantity = Math.min(remainingQuantity, sellOrder.getRemainingQuantity());
+                    long tradePrice = sellOrder.getPrice();
+
+                    Trade trade = createTrade(order, sellOrder, qtyBd(sym, tradeQuantity), priceBd(sym, tradePrice));
                     trades.add(trade);
-                    
-                    remainingQuantity = remainingQuantity.subtract(tradeQuantity);
+
+                    remainingQuantity = Math.subtractExact(remainingQuantity, tradeQuantity);
                 }
             }
         } else {
             // 卖出减仓：从买单薄撮合
             for (List<Order> buyOrders : orderBook.getBuyOrders().values()) {
                 for (Order buyOrder : buyOrders) {
-                    if (remainingQuantity.compareTo(BigDecimal.ZERO) <= 0) {
+                    if (remainingQuantity <= 0) {
                         break;
                     }
-                    
-                    BigDecimal tradeQuantity = remainingQuantity.min(buyOrder.getRemainingQuantity());
-                    BigDecimal tradePrice = buyOrder.getPrice();
-                    
-                    Trade trade = createTrade(buyOrder, order, tradeQuantity, tradePrice);
+
+                    long tradeQuantity = Math.min(remainingQuantity, buyOrder.getRemainingQuantity());
+                    long tradePrice = buyOrder.getPrice();
+
+                    Trade trade = createTrade(buyOrder, order, qtyBd(sym, tradeQuantity), priceBd(sym, tradePrice));
                     trades.add(trade);
-                    
-                    remainingQuantity = remainingQuantity.subtract(tradeQuantity);
+
+                    remainingQuantity = Math.subtractExact(remainingQuantity, tradeQuantity);
                 }
             }
         }
@@ -812,7 +831,7 @@ public class RiskManagementService {
         order.setSymbol(position.getSymbol());
         order.setSide(position.getSide() == PositionSide.LONG ? OrderSide.SELL : OrderSide.BUY);
         order.setType(OrderType.MARKET); // 市价减仓
-        order.setQuantity(quantity);
+        order.setQuantity(qtyRaw(position.getSymbol(), quantity));
         order.setPositionAction(PositionAction.CLOSE);
         order.setClientOrderId("ADL_REDUCTION");
         order.setRemark("ADL自动减仓");

@@ -17,11 +17,13 @@ import com.exchange.match.model.MatchResponse;
 import com.exchange.match.core.transport.AeronMatchResultPublisher;
 import com.exchange.match.enums.EventType;
 import com.exchange.match.request.EventNewOrderReq;
+import com.exchange.common.math.FixedPoint;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.List;
 import java.util.Map;
 
@@ -47,6 +49,16 @@ public class NewOrderEventHandler implements EventHandler {
 
     @Autowired
     private OrderMatcherFactory orderMatcherFactory;
+
+    // 定点边界换算 (Order long ↔ MatchResponse/Position BigDecimal)
+    private BigDecimal priceBd(String symbolCode, long raw) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return FixedPoint.toBigDecimal(raw, s != null ? s.priceScale() : 8);
+    }
+    private BigDecimal qtyBd(String symbolCode, long raw) {
+        Symbol s = memoryManager.getSymbol(symbolCode);
+        return FixedPoint.toBigDecimal(raw, s != null ? s.baseScale() : 8);
+    }
 
     /**
      * Aeron MDC 出站发布者（可选）。
@@ -108,8 +120,14 @@ public class NewOrderEventHandler implements EventHandler {
             order.setPositionAction(PositionAction.valueOf(newOrderReq.getPositionAction()));
         }
 
-        order.setPrice(newOrderReq.getPrice());
-        order.setQuantity(newOrderReq.getQuantity());
+        // DTO BigDecimal → 定点 long raw(按 symbol scale,DOWN 截断多余精度)
+        Symbol sym = memoryManager.getSymbol(newOrderReq.getSymbol());
+        int pScale = sym != null ? sym.priceScale() : 8;
+        int bScale = sym != null ? sym.baseScale() : 8;
+        order.setPrice(newOrderReq.getPrice() != null
+                ? FixedPoint.fromBigDecimal(newOrderReq.getPrice(), pScale, RoundingMode.DOWN) : 0L);
+        order.setQuantity(newOrderReq.getQuantity() != null
+                ? FixedPoint.fromBigDecimal(newOrderReq.getQuantity(), bScale, RoundingMode.DOWN) : 0L);
         order.setClientOrderId(newOrderReq.getClientOrderId());
         order.setRemark(newOrderReq.getRemark());
         return order;
@@ -125,8 +143,8 @@ public class NewOrderEventHandler implements EventHandler {
         response.setSymbol(order.getSymbol());
         response.setSide(order.getSide());
         response.setOrderType(order.getType());
-        response.setOrderPrice(order.getPrice());
-        response.setOrderQuantity(order.getQuantity());
+        response.setOrderPrice(priceBd(order.getSymbol(), order.getPrice()));
+        response.setOrderQuantity(qtyBd(order.getSymbol(), order.getQuantity()));
 
         try {
             // 验证标的
@@ -151,29 +169,34 @@ public class NewOrderEventHandler implements EventHandler {
                 return response;
             }
 
-            if (!symbol.isValidPrice(order.getPrice())) {
+            int priceScale = symbol.priceScale();
+            int baseScale  = symbol.baseScale();
+            BigDecimal priceBdVal = FixedPoint.toBigDecimal(order.getPrice(), priceScale);
+            BigDecimal qtyBdVal   = FixedPoint.toBigDecimal(order.getQuantity(), baseScale);
+
+            if (!symbol.isValidPrice(priceBdVal)) {
                 response.setStatus(MatchStatus.REJECTED);
-                response.setErrorMessage("价格无效: " + order.getPrice());
+                response.setErrorMessage("价格无效: " + priceBdVal);
                 response.setRejectInfo(createRejectInfo(
                     MatchResponse.RejectInfo.RejectType.INVALID_PRICE,
-                    "价格无效: " + order.getPrice()
+                    "价格无效: " + priceBdVal
                 ));
                 return response;
             }
 
-            if (!symbol.isValidQuantity(order.getQuantity())) {
+            if (!symbol.isValidQuantity(qtyBdVal)) {
                 response.setStatus(MatchStatus.REJECTED);
-                response.setErrorMessage("数量无效: " + order.getQuantity());
+                response.setErrorMessage("数量无效: " + qtyBdVal);
                 response.setRejectInfo(createRejectInfo(
                     MatchResponse.RejectInfo.RejectType.INVALID_QUANTITY,
-                    "数量无效: " + order.getQuantity()
+                    "数量无效: " + qtyBdVal
                 ));
                 return response;
             }
 
-            // 格式化价格和数量
-            order.setPrice(symbol.formatPrice(order.getPrice()));
-            order.setQuantity(symbol.formatQuantity(order.getQuantity()));
+            // 格式化价格和数量（Symbol 冷格式化返回 BigDecimal，转回 long raw；DOWN 不放大金额）
+            order.setPrice(FixedPoint.fromBigDecimal(symbol.formatPrice(priceBdVal), priceScale, RoundingMode.DOWN));
+            order.setQuantity(FixedPoint.fromBigDecimal(symbol.formatQuantity(qtyBdVal), baseScale, RoundingMode.DOWN));
             order.setRemainingQuantity(order.getQuantity());
 
             // 根据交易类型设置开平仓动作
@@ -187,7 +210,7 @@ public class NewOrderEventHandler implements EventHandler {
                 if (order.getPositionAction() != null) {
                     PositionBalance balance = getPositionBalance(order.getSymbol());
                     if (balance != null) {
-                        if (!balance.checkOpenCloseBalance(order.getPositionAction(), order.getSide(), order.getQuantity())) {
+                        if (!balance.checkOpenCloseBalance(order.getPositionAction(), order.getSide(), FixedPoint.toBigDecimal(order.getQuantity(), baseScale))) {
                             response.setStatus(MatchStatus.REJECTED);
                             response.setErrorMessage("开平仓操作会导致持仓不平衡");
                             response.setRejectInfo(createRejectInfo(
@@ -203,7 +226,7 @@ public class NewOrderEventHandler implements EventHandler {
                 if (order.getPositionAction() != null && order.getPositionAction().isClose()) {
                     Position position = memoryManager.getPosition(order.getUserId(), order.getSymbol());
                     if (position != null) {
-                        if (!position.canClose(order.getQuantity())) {
+                        if (!position.canClose(FixedPoint.toBigDecimal(order.getQuantity(), baseScale))) {
                             response.setStatus(MatchStatus.REJECTED);
                             response.setErrorMessage("可用仓位不足，无法平仓");
                             response.setRejectInfo(createRejectInfo(
@@ -214,7 +237,7 @@ public class NewOrderEventHandler implements EventHandler {
                             return response;
                         }
 
-                        if (!position.lockPosition(order.getQuantity(), order.getOrderId(), "平仓订单锁定")) {
+                        if (!position.lockPosition(FixedPoint.toBigDecimal(order.getQuantity(), baseScale), order.getOrderId(), "平仓订单锁定")) {
                             response.setStatus(MatchStatus.REJECTED);
                             response.setErrorMessage("仓位锁定失败");
                             response.setRejectInfo(createRejectInfo(
@@ -239,8 +262,8 @@ public class NewOrderEventHandler implements EventHandler {
 
             // 更新响应信息
             response.setTrades(trades);
-            response.setMatchQuantity(order.getFilledQuantity());
-            response.setRemainingQuantity(order.getRemainingQuantity());
+            response.setMatchQuantity(FixedPoint.toBigDecimal(order.getFilledQuantity(), baseScale));
+            response.setRemainingQuantity(FixedPoint.toBigDecimal(order.getRemainingQuantity(), baseScale));
 
             if (!trades.isEmpty()) {
                 BigDecimal totalAmount = trades.stream()

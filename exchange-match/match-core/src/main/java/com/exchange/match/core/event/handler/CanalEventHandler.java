@@ -108,7 +108,10 @@ public class CanalEventHandler implements EventHandler {
             
             // 记录撤单前状态
             MatchStatus previousStatus = convertOrderStatusToMatchStatus(order.getStatus());
-            BigDecimal cancelQuantity = order.getRemainingQuantity();
+            com.exchange.match.core.model.Symbol canalSym = memoryManager.getSymbol(order.getSymbol());
+            int canalBScale = canalSym != null ? canalSym.baseScale() : 8;
+            BigDecimal cancelQuantity = com.exchange.common.math.FixedPoint.toBigDecimal(
+                    order.getRemainingQuantity(), canalBScale);
             
             // 执行撤单
             order.cancel();
@@ -116,7 +119,8 @@ public class CanalEventHandler implements EventHandler {
             
             // 更新响应信息
             response.setStatus(MatchStatus.CANCELLED);
-            response.setMatchQuantity(order.getFilledQuantity());
+            response.setMatchQuantity(com.exchange.common.math.FixedPoint.toBigDecimal(
+                    order.getFilledQuantity(), canalBScale));
             response.setRemainingQuantity(BigDecimal.ZERO);
             
             // 设置撤单信息

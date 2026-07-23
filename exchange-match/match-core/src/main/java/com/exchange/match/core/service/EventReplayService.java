@@ -252,8 +252,11 @@ public class EventReplayService {
         Order order = ob.getOrder(orderId);
         if (order == null) return;  // Not in snapshot book — will time-out on client retry
 
-        order.updateFilledQuantity(qty);
-        if (order.getRemainingQuantity().compareTo(BigDecimal.ZERO) <= 0) {
+        com.exchange.match.core.model.Symbol s = memoryManager.getSymbol(order.getSymbol());
+        long qtyRaw = com.exchange.common.math.FixedPoint.fromBigDecimal(
+                qty, s != null ? s.baseScale() : 8, java.math.RoundingMode.DOWN);
+        order.updateFilledQuantity(qtyRaw);
+        if (order.getRemainingQuantity() <= 0) {
             ob.removeOrder(orderId);
             log.debug("[EventReplay] Fully filled & removed orderId={}", orderId);
         } else {

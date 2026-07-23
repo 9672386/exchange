@@ -6,7 +6,6 @@ import com.exchange.common.event.SystemEventReporter;
 import com.exchange.common.id.SnowflakeId;
 import lombok.extern.slf4j.Slf4j;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -122,9 +121,9 @@ public class BalanceLedger {
      * @param orderId     关联订单 ID（幂等键）
      * @param accountType 账户类型
      * @param asset       资产代码
-     * @param amount      冻结金额
+     * @param amount      冻结金额（该资产 scale 下的定点 raw）
      */
-    public record FreezeItem(String orderId, AccountType accountType, String asset, BigDecimal amount) {}
+    public record FreezeItem(String orderId, AccountType accountType, String asset, long amount) {}
 
     // =========================================================================
     // 查询
@@ -187,7 +186,7 @@ public class BalanceLedger {
      * @throws IllegalStateException 可用余额不足
      */
     public void freeze(Long userId, AccountType accountType, String asset,
-                       BigDecimal amount, String orderId, long clusterTimestamp) {
+                       long amount, String orderId, long clusterTimestamp) {
         String key = "FREEZE:" + orderId;
         if (isProcessed(key)) {
             reportIdempotentHit("FREEZE", orderId, clusterTimestamp);
@@ -206,7 +205,7 @@ public class BalanceLedger {
      * 解冻资产（撤单时调用）。
      */
     public void unfreeze(Long userId, AccountType accountType, String asset,
-                         BigDecimal amount, String orderId, long clusterTimestamp) {
+                         long amount, String orderId, long clusterTimestamp) {
         String key = "UNFREEZE:" + orderId;
         if (isProcessed(key)) {
             reportIdempotentHit("UNFREEZE", orderId, clusterTimestamp);
@@ -239,8 +238,8 @@ public class BalanceLedger {
     public void settleTrade(Long buyerId, Long sellerId,
                             AccountType accountType,
                             String baseAsset, String quoteAsset,
-                            BigDecimal qty, BigDecimal quoteAmt,
-                            BigDecimal buyFee, BigDecimal sellFee,
+                            long qty, long quoteAmt,
+                            long buyFee, long sellFee,
                             String tradeId, long clusterTimestamp) {
         String key = "SETTLE:" + tradeId;
         if (isProcessed(key)) {
@@ -249,21 +248,21 @@ public class BalanceLedger {
             return;
         }
 
-        // Phase 1: 整体预校验
-        BigDecimal buyerCost = quoteAmt.add(buyFee);
-        Balance buyerQuote   = getOrCreate(buyerId,  accountType, quoteAsset);
-        Balance sellerBase   = getOrCreate(sellerId, accountType, baseAsset);
+        // Phase 1: 整体预校验（qty/quoteAmt 同 base/quote 资产 scale，raw 直接比较）
+        long buyerCost    = Math.addExact(quoteAmt, buyFee);
+        Balance buyerQuote = getOrCreate(buyerId,  accountType, quoteAsset);
+        Balance sellerBase = getOrCreate(sellerId, accountType, baseAsset);
 
-        if (buyerQuote.getFrozen().compareTo(buyerCost) < 0) {
+        if (buyerQuote.getFrozen() < buyerCost) {
             throw new IllegalStateException(String.format(
                     "[SETTLE] Buyer insufficient frozen quoteAsset: userId=%d accountType=%s asset=%s " +
-                    "frozen=%s required=%s tradeId=%s",
+                    "frozen=%d required=%d tradeId=%s",
                     buyerId, accountType, quoteAsset, buyerQuote.getFrozen(), buyerCost, tradeId));
         }
-        if (sellerBase.getFrozen().compareTo(qty) < 0) {
+        if (sellerBase.getFrozen() < qty) {
             throw new IllegalStateException(String.format(
                     "[SETTLE] Seller insufficient frozen baseAsset: userId=%d accountType=%s asset=%s " +
-                    "frozen=%s required=%s tradeId=%s",
+                    "frozen=%d required=%d tradeId=%s",
                     sellerId, accountType, baseAsset, sellerBase.getFrozen(), qty, tradeId));
         }
 
@@ -271,7 +270,7 @@ public class BalanceLedger {
         buyerQuote.deductFrozen(buyerCost);
         getOrCreate(buyerId,  accountType, baseAsset).credit(qty);
         sellerBase.deductFrozen(qty);
-        getOrCreate(sellerId, accountType, quoteAsset).credit(quoteAmt.subtract(sellFee));
+        getOrCreate(sellerId, accountType, quoteAsset).credit(Math.subtractExact(quoteAmt, sellFee));
 
         markProcessed(key, tradeId, clusterTimestamp);
         advanceSeq(4);   // 4 条流水：买扣/买入/卖扣/卖入
@@ -297,8 +296,8 @@ public class BalanceLedger {
      * @param clusterTimestamp Cluster 消息时间戳
      */
     public void credit(Long userId, AccountType accountType, String asset,
-                       BigDecimal amount, String bizNo, long clusterTimestamp) {
-        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                       long amount, String bizNo, long clusterTimestamp) {
+        if (amount <= 0) {
             throw new IllegalStateException("[CREDIT] amount must be positive: " + amount);
         }
         // 永久幂等（不走 TTL 表）：外部单号重发无时间窗口限制
@@ -323,8 +322,8 @@ public class BalanceLedger {
      * @throws IllegalStateException 可用余额不足
      */
     public void debit(Long userId, AccountType accountType, String asset,
-                      BigDecimal amount, String bizNo, long clusterTimestamp) {
-        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+                      long amount, String bizNo, long clusterTimestamp) {
+        if (amount <= 0) {
             throw new IllegalStateException("[DEBIT] amount must be positive: " + amount);
         }
         // 永久幂等（不走 TTL 表）：外部单号重发无时间窗口限制
@@ -335,9 +334,9 @@ public class BalanceLedger {
             return;
         }
         Balance balance = getOrCreate(userId, accountType, asset);
-        if (balance.getAvailable().compareTo(amount) < 0) {
+        if (balance.getAvailable() < amount) {
             throw new IllegalStateException(String.format(
-                    "[DEBIT] Insufficient available: userId=%d accountType=%s asset=%s available=%s required=%s bizNo=%s",
+                    "[DEBIT] Insufficient available: userId=%d accountType=%s asset=%s available=%d required=%d bizNo=%s",
                     userId, accountType, asset, balance.getAvailable(), amount, bizNo));
         }
         balance.debit(amount);
@@ -364,11 +363,11 @@ public class BalanceLedger {
      * @throws IllegalStateException 出账账户余额不足 / fromType == toType
      */
     public void internalTransfer(Long userId, AccountType fromType, AccountType toType,
-                                 String asset, BigDecimal amount, String bizNo, long clusterTimestamp) {
+                                 String asset, long amount, String bizNo, long clusterTimestamp) {
         if (fromType == toType) {
             throw new IllegalStateException("[TRANSFER] fromType and toType must differ: " + fromType);
         }
-        if (amount.compareTo(BigDecimal.ZERO) <= 0) {
+        if (amount <= 0) {
             throw new IllegalStateException("[TRANSFER] amount must be positive: " + amount);
         }
         String key = "TRANSFER:" + bizNo;
@@ -378,9 +377,9 @@ public class BalanceLedger {
             return;
         }
         Balance from = getOrCreate(userId, fromType, asset);
-        if (from.getAvailable().compareTo(amount) < 0) {
+        if (from.getAvailable() < amount) {
             throw new IllegalStateException(String.format(
-                    "[TRANSFER] Insufficient available: userId=%d from=%s asset=%s available=%s required=%s bizNo=%s",
+                    "[TRANSFER] Insufficient available: userId=%d from=%s asset=%s available=%d required=%d bizNo=%s",
                     userId, fromType, asset, from.getAvailable(), amount, bizNo));
         }
         // 原子执行：先扣出账，再增入账
@@ -407,7 +406,7 @@ public class BalanceLedger {
     public List<FreezeItem> batchFreeze(Long userId, List<FreezeItem> items,
                                         long clusterTimestamp) {
         // Phase 1: 过滤幂等 + 按 (accountType, asset) 汇总所需金额
-        Map<String, BigDecimal> requiredPerKey = new HashMap<>(); // "TYPE:asset" → total
+        Map<String, Long> requiredPerKey = new HashMap<>(); // "TYPE:asset" → total(raw)
         List<FreezeItem> toProcess = new ArrayList<>();
 
         for (FreezeItem item : items) {
@@ -419,7 +418,7 @@ public class BalanceLedger {
             }
             toProcess.add(item);
             String mapKey = item.accountType().name() + ":" + item.asset();
-            requiredPerKey.merge(mapKey, item.amount(), BigDecimal::add);
+            requiredPerKey.merge(mapKey, item.amount(), Math::addExact);
         }
 
         if (toProcess.isEmpty()) {
@@ -428,16 +427,16 @@ public class BalanceLedger {
         }
 
         // Phase 2: 整体预校验
-        for (Map.Entry<String, BigDecimal> entry : requiredPerKey.entrySet()) {
-            String[] parts      = entry.getKey().split(":", 2);
-            AccountType type    = AccountType.valueOf(parts[0]);
-            String asset        = parts[1];
-            BigDecimal required = entry.getValue();
-            Balance balance     = getOrCreate(userId, type, asset);
+        for (Map.Entry<String, Long> entry : requiredPerKey.entrySet()) {
+            String[] parts   = entry.getKey().split(":", 2);
+            AccountType type = AccountType.valueOf(parts[0]);
+            String asset     = parts[1];
+            long required    = entry.getValue();
+            Balance balance  = getOrCreate(userId, type, asset);
 
-            if (balance.getAvailable().compareTo(required) < 0) {
+            if (balance.getAvailable() < required) {
                 throw new IllegalStateException(String.format(
-                        "[BATCH_FREEZE] Insufficient available %s/%s: userId=%d available=%s required=%s",
+                        "[BATCH_FREEZE] Insufficient available %s/%s: userId=%d available=%d required=%d",
                         type, asset, userId, balance.getAvailable(), required));
             }
         }
