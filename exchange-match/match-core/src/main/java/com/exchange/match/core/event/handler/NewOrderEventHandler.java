@@ -128,6 +128,16 @@ public class NewOrderEventHandler implements EventHandler {
                 ? FixedPoint.fromBigDecimal(newOrderReq.getPrice(), pScale, RoundingMode.DOWN) : 0L);
         order.setQuantity(newOrderReq.getQuantity() != null
                 ? FixedPoint.fromBigDecimal(newOrderReq.getQuantity(), bScale, RoundingMode.DOWN) : 0L);
+        // 冻结额随单(按 lockedAsset scale;UP 避免少冻)
+        if (newOrderReq.getLockedAsset() != null && newOrderReq.getLockedAmount() != null && sym != null) {
+            int lockScale = newOrderReq.getLockedAsset().equals(sym.getQuoteCurrency())
+                    ? sym.quoteScaleOrDefault()
+                    : (newOrderReq.getLockedAsset().equals(sym.getBaseCurrency()) ? sym.baseScale() : 8);
+            long lockedRaw = FixedPoint.fromBigDecimal(newOrderReq.getLockedAmount(), lockScale, RoundingMode.UP);
+            order.setLockedAsset(newOrderReq.getLockedAsset());
+            order.setLockedAmount(lockedRaw);
+            order.setLockedRemaining(lockedRaw);
+        }
         order.setClientOrderId(newOrderReq.getClientOrderId());
         order.setRemark(newOrderReq.getRemark());
         return order;

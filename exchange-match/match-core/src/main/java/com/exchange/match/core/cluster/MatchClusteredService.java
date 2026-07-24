@@ -18,6 +18,10 @@ import com.exchange.match.core.service.MatchEngineService;
 import com.exchange.match.core.transport.AeronMatchResultPublisher;
 import com.exchange.match.request.EventCanalReq;
 import com.exchange.match.request.EventNewOrderReq;
+import com.exchange.match.request.EventListSymbolReq;
+import com.exchange.match.request.EventDelistSymbolReq;
+import com.exchange.match.request.EventCancelUserReq;
+import com.exchange.match.request.EventCancelSymbolReq;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
@@ -84,16 +88,26 @@ public class MatchClusteredService implements ClusteredService {
 
     // ---- 消息类型字节常量（与 AeronOrderReceiver 保持一致） ----------------------
     /** Ingress: 新建订单 */
-    public static final byte MSG_NEW_ORDER   = 0x01;
+    public static final byte MSG_NEW_ORDER    = 0x01;
     /** Ingress: 撤单 */
-    public static final byte MSG_CANCEL      = 0x02;
+    public static final byte MSG_CANCEL       = 0x02;
+    /** Ingress: 标的上架 */
+    public static final byte MSG_LIST_SYMBOL   = 0x03;
+    /** Ingress: 标的下架 */
+    public static final byte MSG_DELIST_SYMBOL = 0x04;
+    /** Ingress: 用户订单全撤 */
+    public static final byte MSG_CANCEL_USER   = 0x05;
+    /** Ingress: 标的挂单全撤 */
+    public static final byte MSG_CANCEL_SYMBOL = 0x06;
 
     /** Egress: 引擎接受订单（挂单成功或全部成交） */
-    public static final byte MSG_ACK         = 0x10;
+    public static final byte MSG_ACK          = 0x10;
     /** Egress: 引擎拒绝订单 */
-    public static final byte MSG_REJECT      = 0x11;
+    public static final byte MSG_REJECT       = 0x11;
     /** Egress: 撤单确认 */
-    public static final byte MSG_CANCEL_ACK  = 0x12;
+    public static final byte MSG_CANCEL_ACK   = 0x12;
+    /** Egress: 标的运维（上架/下架）确认 */
+    public static final byte MSG_SYMBOL_ACK    = 0x13;
 
     // ---- 依赖（由 Spring 通过构造器注入，不在 ClusteredService 内使用 Spring） ---
     /** Egress offer 有界重试上限，避免无限自旋阻塞 Service Thread。 */
@@ -195,8 +209,12 @@ public class MatchClusteredService implements ClusteredService {
 
         try {
             switch (msgType) {
-                case MSG_NEW_ORDER  -> handleNewOrder(session, timestamp, buffer, offset + 1, jsonLen);
-                case MSG_CANCEL     -> handleCancel(session, timestamp, buffer, offset + 1, jsonLen);
+                case MSG_NEW_ORDER    -> handleNewOrder(session, timestamp, buffer, offset + 1, jsonLen);
+                case MSG_CANCEL       -> handleCancel(session, timestamp, buffer, offset + 1, jsonLen);
+                case MSG_LIST_SYMBOL   -> handleListSymbol(session, timestamp, buffer, offset + 1, jsonLen);
+                case MSG_DELIST_SYMBOL -> handleDelistSymbol(session, timestamp, buffer, offset + 1, jsonLen);
+                case MSG_CANCEL_USER   -> handleCancelUser(session, timestamp, buffer, offset + 1, jsonLen);
+                case MSG_CANCEL_SYMBOL -> handleCancelSymbol(session, timestamp, buffer, offset + 1, jsonLen);
                 default             -> {
                     eventReporter.record(CoreSystemEvent.REQUEST_INVALID, timestamp,
                             () -> "unknownMsgType=0x" + Integer.toHexString(msgType & 0xFF));
@@ -321,6 +339,164 @@ public class MatchClusteredService implements ClusteredService {
         if (cluster.role() == Cluster.Role.LEADER && aeronPublisher != null) {
             aeronPublisher.send(response);
         }
+    }
+
+    // =========================================================================
+    // 批量撤单（用户全撤 / 标的全撤）—— 确定性遍历,聚合解冻经可靠流到资产
+    // =========================================================================
+
+    private void handleCancelUser(ClientSession session, long clusterTimestamp,
+                                  DirectBuffer buffer, int offset, int length) throws IOException {
+        byte[] jsonBytes = new byte[length];
+        buffer.getBytes(offset, jsonBytes);
+        EventCancelUserReq req = objectMapper.readValue(jsonBytes, EventCancelUserReq.class);
+
+        MatchResponse response = matchEngineService.cancelUserOrders(req.getUserId());
+        log.info("[MatchCluster] CANCEL_USER userId={} releases={}",
+                req.getUserId(), response.getReleases() != null ? response.getReleases().size() : 0);
+
+        sendEgress(session, MSG_CANCEL_ACK, objectMapper.writeValueAsString(response));
+        // 解冻指令随 response 经可靠结算流到 TradeSettlementForwarder → 资产 UNFREEZE
+        if (cluster.role() == Cluster.Role.LEADER && aeronPublisher != null) {
+            aeronPublisher.send(response);
+        }
+    }
+
+    private void handleCancelSymbol(ClientSession session, long clusterTimestamp,
+                                    DirectBuffer buffer, int offset, int length) throws IOException {
+        byte[] jsonBytes = new byte[length];
+        buffer.getBytes(offset, jsonBytes);
+        EventCancelSymbolReq req = objectMapper.readValue(jsonBytes, EventCancelSymbolReq.class);
+
+        MatchResponse response = matchEngineService.cancelSymbolOrders(req.getSymbol());
+        log.info("[MatchCluster] CANCEL_SYMBOL symbol={} releases={}",
+                req.getSymbol(), response.getReleases() != null ? response.getReleases().size() : 0);
+
+        sendEgress(session, MSG_CANCEL_ACK, objectMapper.writeValueAsString(response));
+        if (cluster.role() == Cluster.Role.LEADER && aeronPublisher != null) {
+            aeronPublisher.send(response);
+        }
+    }
+
+    // =========================================================================
+    // 标的上架 / 下架（Raft 写操作,确定性写入 MemoryManager）
+    // =========================================================================
+
+    /**
+     * 标的上架:确定性写入 symbol 配置并置 ACTIVE。
+     *
+     * <p>幂等:symbol 已存在则视为已上架,直接回 ACK(不覆盖运行中配置)。
+     * 确定性:时间戳用 cluster timestamp,不读 wall-clock。
+     */
+    private void handleListSymbol(ClientSession session, long clusterTimestamp,
+                                  DirectBuffer buffer, int offset, int length) throws IOException {
+        byte[] jsonBytes = new byte[length];
+        buffer.getBytes(offset, jsonBytes);
+        EventListSymbolReq req = objectMapper.readValue(jsonBytes, EventListSymbolReq.class);
+        String symbol = req.getSymbol();
+
+        if (memoryManager.getSymbol(symbol) != null) {
+            log.info("[MatchCluster] LIST_SYMBOL idempotent skip — {} already listed", symbol);
+            sendEgress(session, MSG_SYMBOL_ACK, symbolAckJson(req.getListId(), symbol, "ALREADY_LISTED"));
+            return;
+        }
+
+        Symbol s = new Symbol();
+        s.setSymbol(symbol);
+        s.setTradingType(req.getTradingType() != null
+                ? TradingType.valueOf(req.getTradingType()) : TradingType.SPOT);
+        s.setBaseCurrency(req.getBaseCurrency());
+        s.setQuoteCurrency(req.getQuoteCurrency());
+        s.setMinQuantity(req.getMinQuantity());
+        s.setMaxQuantity(req.getMaxQuantity());
+        s.setQuantityPrecision(req.getQuantityPrecision());
+        s.setPricePrecision(req.getPricePrecision());
+        s.setQuoteScale(req.getQuoteScale());
+        s.setTickSize(req.getTickSize());
+        if (req.getFeeRate() != null)          s.setFeeRate(req.getFeeRate());
+        if (req.getSupportsLeverage() != null) s.setSupportsLeverage(req.getSupportsLeverage());
+        if (req.getSupportsShort() != null)    s.setSupportsShort(req.getSupportsShort());
+        if (req.getMaxLeverage() != null)      s.setMaxLeverage(req.getMaxLeverage());
+
+        // 确定性时间:覆盖 Symbol 构造器里的 LocalDateTime.now()
+        LocalDateTime t = LocalDateTime.ofInstant(Instant.ofEpochMilli(clusterTimestamp), ZoneId.of("UTC"));
+        s.setCreateTime(t);
+        s.setUpdateTime(t);
+        s.setStatus(SymbolStatus.ACTIVE);
+
+        memoryManager.addSymbol(s);
+        log.info("[MatchCluster] LISTED symbol={} type={} base/quote={}/{} pScale={} bScale={} qScale={}",
+                symbol, s.getTradingType(), s.getBaseCurrency(), s.getQuoteCurrency(),
+                s.getPricePrecision(), s.getQuantityPrecision(), s.getQuoteScale());
+        sendEgress(session, MSG_SYMBOL_ACK, symbolAckJson(req.getListId(), symbol, "LISTED"));
+    }
+
+    /**
+     * 标的下架:安全序列 SUSPENDED → (挂单为空)→ DELISTED。
+     *
+     * <p>本块只落状态机与状态流转;"挂单全撤 + 解冻"依赖批量撤单能力(后续块接入)。
+     * 因此:先置 SUSPENDED 停新单;若订单簿已空则终态 DELISTED 并回收订单簿,
+     * 否则保持 SUSPENDED 并回报待撤挂单数(需先撤单)。
+     */
+    private void handleDelistSymbol(ClientSession session, long clusterTimestamp,
+                                    DirectBuffer buffer, int offset, int length) throws IOException {
+        byte[] jsonBytes = new byte[length];
+        buffer.getBytes(offset, jsonBytes);
+        EventDelistSymbolReq req = objectMapper.readValue(jsonBytes, EventDelistSymbolReq.class);
+        String symbol = req.getSymbol();
+
+        Symbol s = memoryManager.getSymbol(symbol);
+        if (s == null) {
+            sendEgress(session, MSG_SYMBOL_ACK, symbolAckJson(req.getDelistId(), symbol, "NOT_FOUND"));
+            return;
+        }
+
+        LocalDateTime t = LocalDateTime.ofInstant(Instant.ofEpochMilli(clusterTimestamp), ZoneId.of("UTC"));
+
+        // 幂等:已下架直接回 ACK
+        if (s.getStatus() == SymbolStatus.DELISTED) {
+            sendEgress(session, MSG_SYMBOL_ACK, symbolAckJson(req.getDelistId(), symbol, "ALREADY_DELISTED"));
+            return;
+        }
+
+        // 1. 停新单
+        s.setStatus(SymbolStatus.SUSPENDED);
+        s.setUpdateTime(t);
+        memoryManager.updateSymbol(s);
+
+        // 2. 检查订单簿;force=true 则自动撤掉全部挂单并解冻
+        OrderBook ob = memoryManager.getOrderBook(symbol);
+        int openOrders = ob != null ? ob.getOrderCount() : 0;
+
+        if (openOrders > 0 && req.isForce()) {
+            MatchResponse cancelResp = matchEngineService.cancelSymbolOrders(symbol);
+            // 解冻指令经可靠结算流到资产
+            if (cluster.role() == Cluster.Role.LEADER && aeronPublisher != null) {
+                aeronPublisher.send(cancelResp);
+            }
+            ob = memoryManager.getOrderBook(symbol);
+            openOrders = ob != null ? ob.getOrderCount() : 0;
+            log.info("[MatchCluster] DELIST force-cancel symbol={} releases={}",
+                    symbol, cancelResp.getReleases() != null ? cancelResp.getReleases().size() : 0);
+        }
+
+        if (openOrders == 0) {
+            s.setStatus(SymbolStatus.DELISTED);
+            s.setUpdateTime(t);
+            memoryManager.updateSymbol(s);
+            if (ob != null) memoryManager.removeOrderBook(symbol);
+            log.info("[MatchCluster] DELISTED symbol={}", symbol);
+            sendEgress(session, MSG_SYMBOL_ACK, symbolAckJson(req.getDelistId(), symbol, "DELISTED"));
+        } else {
+            log.warn("[MatchCluster] DELIST suspended — symbol={} openOrders={} (cancel first or use force)", symbol, openOrders);
+            sendEgress(session, MSG_SYMBOL_ACK,
+                    "{\"bizNo\":\"" + req.getDelistId() + "\",\"symbol\":\"" + symbol
+                            + "\",\"status\":\"SUSPENDED\",\"openOrders\":" + openOrders + "}");
+        }
+    }
+
+    private String symbolAckJson(String bizNo, String symbol, String status) {
+        return "{\"bizNo\":\"" + bizNo + "\",\"symbol\":\"" + symbol + "\",\"status\":\"" + status + "\"}";
     }
 
     // =========================================================================
@@ -598,6 +774,16 @@ public class MatchClusteredService implements ClusteredService {
                 ? FixedPoint.fromBigDecimal(req.getPrice(), pScale, java.math.RoundingMode.DOWN) : 0L);
         order.setQuantity(req.getQuantity() != null
                 ? FixedPoint.fromBigDecimal(req.getQuantity(), bScale, java.math.RoundingMode.DOWN) : 0L);
+        // 冻结额随单:按 lockedAsset scale(quote→quoteScale,base→baseScale)转定点 long
+        if (req.getLockedAsset() != null && req.getLockedAmount() != null && sym != null) {
+            int lockScale = req.getLockedAsset().equals(sym.getQuoteCurrency())
+                    ? sym.quoteScaleOrDefault()
+                    : (req.getLockedAsset().equals(sym.getBaseCurrency()) ? sym.baseScale() : 8);
+            long lockedRaw = FixedPoint.fromBigDecimal(req.getLockedAmount(), lockScale, java.math.RoundingMode.UP);
+            order.setLockedAsset(req.getLockedAsset());
+            order.setLockedAmount(lockedRaw);
+            order.setLockedRemaining(lockedRaw);
+        }
         order.setClientOrderId(req.getClientOrderId());
         order.setRemark(req.getRemark());
         order.setCreateTime(clusterTime);   // 覆盖构造器中的 LocalDateTime.now()

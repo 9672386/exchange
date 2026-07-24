@@ -183,6 +183,11 @@ public abstract class AbstractOrderMatcher implements OrderMatcher {
         trade.setBuyFee(FixedPoint.toBigDecimal(feeRaw, quoteScale));
         trade.setSellFee(FixedPoint.toBigDecimal(feeRaw, quoteScale));
 
+        // 冻结额随单递减:买方消耗 quote(成交额+买手续费),卖方消耗 base(成交量);
+        // 与资产侧 SETTLE 扣冻结口径一致,残余留待撤单/完成时解冻。
+        buyOrder.consumeLocked(Math.addExact(amountRaw, feeRaw));
+        sellOrder.consumeLocked(quantity);
+
         return trade;
     }
 

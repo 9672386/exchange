@@ -203,7 +203,13 @@ public class TradeSettlementForwarder {
                 // Cluster 原子写入 Raft 日志 → Snapshot，保证位点与结算的一致性
                 forwardBatchSettlement(trades, header.position());
             }
-            // 无论是否有 trades，推进本地位点（下次重启从此处续读）
+            // 撤单/下架的资金解冻(撮合驱动):逐条转 UNFREEZE 到资产 Cluster(orderId 幂等)。
+            // 失败抛异常 → subscribeOnce 退出 → 重试,位点不推进,解冻不漏。
+            List<com.exchange.match.model.MatchResponse.CancelRelease> releases = response.getReleases();
+            if (releases != null && !releases.isEmpty()) {
+                forwardReleases(releases);
+            }
+            // 无论是否有 trades/releases，推进本地位点（下次重启从此处续读）
             startPosition = header.position();
 
         } catch (RuntimeException e) {
@@ -233,6 +239,35 @@ public class TradeSettlementForwarder {
      * @param archivePosition 当前 fragment 在 Match Archive 中的 byte position，
      *                        随 BATCH_SETTLE 写入同一 Raft 日志条目，与结算原子提交
      */
+    /**
+     * 将撤单/下架产生的解冻指令逐条转成 UNFREEZE 发送到资产 Cluster。
+     *
+     * <p>复用 {@link AssetGatewayService#unfreeze}(同步等待 UNFREEZE_OK);
+     * 资产侧以 orderId 幂等(重放/重试不重复解冻)。任一条失败即抛异常,
+     * 由 subscribeOnce 退出重试,位点不推进 → 解冻绝不漏。
+     */
+    private void forwardReleases(List<com.exchange.match.model.MatchResponse.CancelRelease> releases) {
+        for (com.exchange.match.model.MatchResponse.CancelRelease rel : releases) {
+            if (rel == null || rel.getAmount() == null || rel.getUserId() == null) continue;
+            try {
+                com.exchange.account.api.dto.FreezeReq req = new com.exchange.account.api.dto.FreezeReq();
+                req.setUserId(rel.getUserId());
+                req.setAccountType(com.exchange.account.api.enums.AccountType.valueOf(
+                        rel.getAccountType() != null ? rel.getAccountType() : "SPOT"));
+                req.setAsset(rel.getAsset());
+                req.setAmount(rel.getAmount());
+                // 幂等键:用订单号,与下单冻结的 "FREEZE:{orderId}" 区分("UNFREEZE:{orderId}")
+                req.setOrderId(rel.getOrderId());
+                assetGatewayService.unfreeze(req);
+                log.debug("[TradeSettlementForwarder] UNFREEZE confirmed userId={} asset={} amount={} orderId={}",
+                        rel.getUserId(), rel.getAsset(), rel.getAmount(), rel.getOrderId());
+            } catch (Exception e) {
+                throw new RuntimeException("[TradeSettlementForwarder] UNFREEZE failed for orderId="
+                        + rel.getOrderId(), e);
+            }
+        }
+    }
+
     private void forwardBatchSettlement(List<Trade> trades, long archivePosition) {
         try {
             List<Map<String, Object>> tradeItems = new ArrayList<>(trades.size());

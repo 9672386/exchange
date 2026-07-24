@@ -62,6 +62,90 @@ public class MatchEngineServiceImpl implements MatchEngineService {
         return FixedPoint.toBigDecimal(raw, baseScaleOf(symbolCode));
     }
 
+    /**
+     * 对订单残余冻结额构造一条解冻指令并清零 lockedRemaining;无残余返回 null。
+     * 单撤/批量撤单共用,保证"解冻额 = 冻结额 − 已结算"。
+     */
+    private MatchResponse.CancelRelease buildRelease(Order order) {
+        long releaseRaw = order.getLockedRemaining();
+        if (releaseRaw <= 0 || order.getLockedAsset() == null) return null;
+        Symbol relSym = memoryManager.getSymbol(order.getSymbol());
+        int lockScale = (relSym != null && order.getLockedAsset().equals(relSym.getQuoteCurrency()))
+                ? relSym.quoteScaleOrDefault()
+                : (relSym != null && order.getLockedAsset().equals(relSym.getBaseCurrency()))
+                    ? relSym.baseScale() : 8;
+        String acct = (relSym != null && relSym.supportsPosition()) ? "FUTURES" : "SPOT";
+        MatchResponse.CancelRelease rel = new MatchResponse.CancelRelease(
+                order.getUserId(), acct, order.getLockedAsset(),
+                FixedPoint.toBigDecimal(releaseRaw, lockScale),
+                "RELEASE:" + order.getOrderId(), order.getOrderId());
+        order.setLockedRemaining(0L);
+        return rel;
+    }
+
+    /**
+     * 撤销指定用户在所有标的上的全部挂单(确定性:按 orderId 升序)。
+     * 每笔产出解冻指令,聚合到返回的 {@link MatchResponse#getReleases()}。
+     */
+    @Override
+    public MatchResponse cancelUserOrders(Long userId) {
+        MatchResponse resp = new MatchResponse();
+        resp.setUserId(userId);
+        resp.setStatus(MatchStatus.CANCELLED);
+
+        List<Order> targets = new ArrayList<>();
+        for (OrderBook ob : memoryManager.getAllOrderBooks().values()) {
+            targets.addAll(ob.getUserOrders(userId));
+        }
+        targets.sort(java.util.Comparator.comparing(Order::getOrderId));
+
+        List<MatchResponse.CancelRelease> releases = new ArrayList<>();
+        for (Order o : targets) {
+            OrderBook ob = memoryManager.getOrderBook(o.getSymbol());
+            o.cancel();
+            if (ob != null) ob.removeOrder(o.getOrderId());
+            MatchResponse.CancelRelease rel = buildRelease(o);
+            if (rel != null) releases.add(rel);
+        }
+        resp.setReleases(releases);
+        log.info("[MatchEngine] CANCEL_USER userId={} canceled={} releases={}",
+                userId, targets.size(), releases.size());
+        return resp;
+    }
+
+    /**
+     * 撤销指定标的的全部挂单(确定性:按 orderId 升序)。用于下架前清空订单簿。
+     */
+    @Override
+    public MatchResponse cancelSymbolOrders(String symbol) {
+        MatchResponse resp = new MatchResponse();
+        resp.setSymbol(symbol);
+        resp.setStatus(MatchStatus.CANCELLED);
+
+        OrderBook ob = memoryManager.getOrderBook(symbol);
+        if (ob == null) {
+            resp.setReleases(new ArrayList<>());
+            return resp;
+        }
+
+        List<Order> targets = new ArrayList<>();
+        ob.getBuyOrders().values().forEach(targets::addAll);
+        ob.getSellOrders().values().forEach(targets::addAll);
+        targets.sort(java.util.Comparator.comparing(Order::getOrderId));
+
+        List<MatchResponse.CancelRelease> releases = new ArrayList<>();
+        for (Order o : targets) {
+            o.cancel();
+            ob.removeOrder(o.getOrderId());
+            MatchResponse.CancelRelease rel = buildRelease(o);
+            if (rel != null) releases.add(rel);
+        }
+        resp.setReleases(releases);
+        log.info("[MatchEngine] CANCEL_SYMBOL symbol={} canceled={} releases={}",
+                symbol, targets.size(), releases.size());
+        return resp;
+    }
+
     @Override
     public MatchResponse submitOrder(Order order) {
         MatchResponse response = new MatchResponse();
@@ -173,6 +257,18 @@ public class MatchEngineServiceImpl implements MatchEngineService {
             } else {
                 response.setStatus(MatchStatus.PENDING);
             }
+
+            // 完全成交但吃单价优于限价时,残余冻结额需解冻(否则价格改善的剩余冻结泄漏)。
+            // 仅 taker 会有此残余(maker 按自身价成交,消耗=冻结)。
+            if (order.isFullyFilled() && order.getLockedRemaining() > 0) {
+                MatchResponse.CancelRelease rel = buildRelease(order);
+                if (rel != null) {
+                    List<MatchResponse.CancelRelease> rs = response.getReleases() != null
+                            ? response.getReleases() : new java.util.ArrayList<>();
+                    rs.add(rel);
+                    response.setReleases(rs);
+                }
+            }
             
             // 更新仓位变化信息（仅合约交易）
             if (!trades.isEmpty() && symbol.supportsPosition()) {
@@ -260,6 +356,12 @@ public class MatchEngineServiceImpl implements MatchEngineService {
             // 取消订单
             order.cancel();
             orderBook.updateOrder(order);
+
+            // 撮合驱动解冻:对残余冻结额产出一条 UNFREEZE 指令(经可靠结算流到资产服务)
+            MatchResponse.CancelRelease rel = buildRelease(order);
+            if (rel != null) {
+                response.setReleases(new java.util.ArrayList<>(java.util.List.of(rel)));
+            }
             
             // 设置响应信息
             response.setStatus(MatchStatus.CANCELLED);

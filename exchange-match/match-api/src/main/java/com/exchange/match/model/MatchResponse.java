@@ -98,7 +98,15 @@ public class MatchResponse {
      * 撤单信息
      */
     private CancelInfo cancelInfo;
-    
+
+    /**
+     * 撤单/下架产生的资金解冻指令(撮合驱动)。
+     *
+     * <p>撮合把订单残余冻结额随此列表经可靠结算流传给资产服务,
+     * 由 {@code TradeSettlementForwarder} 转成 UNFREEZE。单撤为单元素,批量撤单为多元素。
+     */
+    private List<CancelRelease> releases;
+
     /**
      * 拒绝信息
      */
@@ -306,6 +314,30 @@ public class MatchResponse {
         public CancelInfo() {
             this.cancelTime = LocalDateTime.now();
         }
+    }
+
+    /**
+     * 资金解冻指令(撤单/下架对残余冻结额释放)。
+     *
+     * <p>经可靠结算流传到资产服务,{@code TradeSettlementForwarder} 据此发 UNFREEZE。
+     * {@code bizNo} 作幂等键(资产侧 UNFREEZE 去重)。
+     */
+    @lombok.Data
+    @lombok.NoArgsConstructor
+    @lombok.AllArgsConstructor
+    public static class CancelRelease {
+        /** 被解冻用户。 */
+        private Long userId;
+        /** 账户类型(SPOT/FUTURES),资产侧按此定位账户。 */
+        private String accountType;
+        /** 解冻资产代码(下单冻结的 lockedAsset)。 */
+        private String asset;
+        /** 解冻金额(真实值 BigDecimal)。 */
+        private BigDecimal amount;
+        /** 幂等键(如 CANCEL:{orderId})。 */
+        private String bizNo;
+        /** 关联订单。 */
+        private String orderId;
     }
     
     /**

@@ -112,6 +112,26 @@ public class Order {
      */
     private String remark;
 
+    // ===================== 冻结额随单模型(撤单/完成时解冻的对账真相源) =====================
+
+    /**
+     * 下单时冻结的资产代码(限价买=quote,限价卖=base)。
+     */
+    private String lockedAsset;
+
+    /**
+     * 下单时冻结的总额(lockedAsset scale 下的定点 raw)。由下单编排(网关)算好随单传入。
+     */
+    private long lockedAmount;
+
+    /**
+     * 尚未被结算消耗的冻结残余(lockedAsset scale 下的定点 raw)。
+     *
+     * <p>初始 = {@link #lockedAmount};每笔成交按实际结算额递减;
+     * 订单终态(完全成交/撤单)时对残余发解冻(UNFREEZE),保证"解冻额 = 冻结额 − 已结算"。
+     */
+    private long lockedRemaining;
+
     public Order() {
         this.createTime = LocalDateTime.now();
         this.updateTime = LocalDateTime.now();
@@ -185,5 +205,16 @@ public class Order {
      */
     public boolean isPartiallyFilled() {
         return filledQuantity > 0 && remainingQuantity > 0;
+    }
+
+    /**
+     * 成交结算消耗冻结额(lockedAsset scale 下的 raw)。
+     *
+     * <p>clamp 到 0:冻结额是下单时按限价估算的,实际成交价可能更优 → 消耗小于估算,
+     * 残余为正(完成/撤单时解冻);任何舍入差也不会让残余变负。
+     */
+    public void consumeLocked(long amount) {
+        if (lockedRemaining <= 0 || amount <= 0) return;
+        lockedRemaining = Math.max(0L, lockedRemaining - amount);
     }
 }

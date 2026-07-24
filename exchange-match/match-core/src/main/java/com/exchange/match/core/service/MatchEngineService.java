@@ -22,6 +22,12 @@ public interface MatchEngineService {
      * 撤销订单
      */
     MatchResponse cancelOrder(String orderId, Long userId);
+
+    /** 撤销用户在所有标的的全部挂单(确定性,聚合解冻)。 */
+    MatchResponse cancelUserOrders(Long userId);
+
+    /** 撤销指定标的的全部挂单(确定性,聚合解冻)。 */
+    MatchResponse cancelSymbolOrders(String symbol);
     
     /**
      * 获取订单
